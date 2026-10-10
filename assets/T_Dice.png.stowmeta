@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "stringId": "t_dice",
+  "tags": [],
+  "pack": "default",
+  "type": "texture",
+  "quality": "normal",
+  "resize": "full",
+  "generateMipmaps": false,
+  "cache": {
+    "sourceSize": 13314,
+    "sourceLastModified": 1567277874000,
+    "settingsHash": "2|q=2|r=0|m=false"
+  }
+}

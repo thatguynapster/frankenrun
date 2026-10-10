@@ -1,0 +1,22 @@
+node_modules/
+dist/
+dist-ssr/
+*.log
+.env*
+.DS_Store
+.vscode/
+.idea/
+coverage/
+rundot/docs/
+.rundot-docs/
+
+# StowKit
+*.stowcache
+!public/cdn-assets/CLAUDE.md
+.rundot/3d-engine-docs
+
+# Agent tooling (local)
+.cursor/
+.claude/launch.json
+.claude/settings.local.json
+**/settings.local.json

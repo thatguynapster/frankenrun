@@ -1,0 +1,10 @@
+{
+  "srcArtDir": "assets",
+  "name": "run-template-3d-react-stowkit",
+  "cdnAssetsPath": "public/cdn-assets",
+  "packs": [
+    {
+      "name": "default"
+    }
+  ]
+}

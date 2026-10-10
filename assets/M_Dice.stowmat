@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "schemaName": "",
+  "properties": [
+    {
+      "fieldName": "Diffuse",
+      "fieldType": "texture",
+      "previewFlag": "mainTex",
+      "value": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "textureAsset": "T_Dice.png"
+    },
+    {
+      "fieldName": "Tint",
+      "fieldType": "color",
+      "previewFlag": "tint",
+      "value": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "textureAsset": null
+    }
+  ]
+}
