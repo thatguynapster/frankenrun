@@ -69,7 +69,10 @@ export class Controls {
     return {
       ...base,
       throttle,
-      steer: Math.round(-screenSteer * 100),
+      // The sim only resolves steering in steps of 10 (its vehicle input is -10..10), so send exactly that
+      // resolution: identical driving, but far fewer distinct inputs, and every input change that differs from
+      // the other client's prediction forces a rollback, so this roughly halves the re-simulation work.
+      steer: Math.round((-screenSteer * 100) / 10) * 10,
       arms: this.down('KeyJ') || this.touchArms,
       head: this.down('KeyK') || this.touchHead,
       legs: this.down('Space') || this.touchLegs,

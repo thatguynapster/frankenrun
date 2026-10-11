@@ -346,3 +346,23 @@ body {
   border-bottom: 34px solid #3bd1ff;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.8));
 }
+
+.gfx {
+  position: absolute;
+  right: calc(12px + var(--safe-right));
+  top: calc(10px + var(--safe-top));
+  pointer-events: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.net {
+  font-size: 10px;
+  line-height: 1.35;
+  max-width: 62vw;
+}

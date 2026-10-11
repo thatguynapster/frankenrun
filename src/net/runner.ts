@@ -28,6 +28,9 @@ function lerpPlayer(a: PlayerView, b: PlayerView, t: number): PlayerView {
   return { ...b, x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t), qx, qy, qz, qw };
 }
 
+/** Netcode prediction budget in ticks. See the note in createRunner. */
+export const MAX_PREDICTION_TICKS = 12;
+
 export type FrankenRunner = SyncplayRunner<GameInput, GameProjection, never>;
 
 export function createRunner(): FrankenRunner {
@@ -36,6 +39,12 @@ export function createRunner(): FrankenRunner {
     defaultInput: DEFAULT_INPUT,
     encodeInput,
     decodeInput,
+    // The netcode needs a prediction span of about (RTT in ticks + 2) to keep our inputs ahead of the
+    // authority's clock; the default cap of 8 ticks (267 ms) is below the ~330 ms round trips seen in
+    // practice, which forced input delay and caused our own inputs to be substituted. The cap also bounds the
+    // work of a rollback (depth x tick cost), so it is kept modest: on a bad link the netcode adds input
+    // delay instead of re-simulating ever deeper.
+    maxPredictionTicks: MAX_PREDICTION_TICKS,
     presentation: {
       project: (projection) => projection,
       interpolate: (previous, current, alpha) => {

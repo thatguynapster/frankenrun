@@ -66,15 +66,30 @@ function pilot(slot: number): GameInput {
 }
 
 const cpTimes: string[] = [];
-let stuck = 0, raceStart = -1, maxMs = 0;
+let stuck = 0, raceStart = -1, maxMs = 0, sumMs = 0, nTicks = 0;
+const allMs: number[] = [];
 const slow: { f: number; ms: number }[] = [];
+const trace = process.env['MEM'] === '1';
+let denseMs = 0, denseN = 0;
+let winMs = 0, winN = 0;
 const frames = 30 * Number(process.env['SECS'] ?? 160);
 for (let f = 0; f < frames; f += 1) {
   const t0 = performance.now();
   state = stepGame(state, [pilot(0), state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true } : DEFAULT_INPUT], prep);
   const ms = performance.now() - t0;
   maxMs = Math.max(maxMs, ms);
+  if (f > 5) { sumMs += ms; nTicks += 1; allMs.push(ms); }
   if (ms > 25) slow.push({ f, ms });
+  if (f >= 300 && f < 1500) { denseMs += ms; denseN += 1; }
+  if (trace && f > 5) {
+    winMs += ms; winN += 1;
+    if (winN === 90) {
+      const w = state.physics;
+      const v = projectGame(state, prep).players[0]!;
+      console.log(`f${f} t${((f - 90) / 30).toFixed(0)}s cp${state.players[0]!.nextCheckpoint} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} avg ${(winMs / winN).toFixed(1)}ms | bodies ${w.bodies.length} pairs ${w.activePairs.length} contacts ${w.contactCache.length} joints ${w.jointCache.length} cells ${state.activeCells.length} slicks ${state.slicks.length} heapMB ${(process.memoryUsage().heapUsed / 1048576).toFixed(0)}`);
+      winMs = 0; winN = 0;
+    }
+  }
   if (state.phase === 'RACING' && raceStart < 0) raceStart = f;
   if (raceStart >= 0) {
     const p = state.players[0]!;
@@ -88,4 +103,7 @@ console.log(`${mapId} (${LEGS ? 'legs' : 'no legs'}): ${prep.checkpoints.length}
 console.log(`  ${cpTimes.join(' ')}`);
 console.log(p0.finishTick >= 0 ? `  FINISHED in ${((p0.finishTick - 90) / 30).toFixed(1)} s` : `  did NOT finish (stuck-seconds ${stuck})`);
 console.log(`  ticks over 25 ms: ${slow.length} of ${state.frame} (first ${slow.slice(0, 6).map((x) => `${x.f}:${x.ms.toFixed(0)}ms`).join(' ')})`);
+allMs.sort((a, b) => a - b);
+console.log(`  ms/tick avg ${(sumMs / Math.max(1, nTicks)).toFixed(2)} p50 ${allMs[Math.floor(allMs.length * 0.5)]!.toFixed(2)} p95 ${allMs[Math.floor(allMs.length * 0.95)]!.toFixed(2)} p99 ${allMs[Math.floor(allMs.length * 0.99)]!.toFixed(2)}`);
+console.log(`  dense stretch (frames 300-1500) avg ${(denseMs / Math.max(1, denseN)).toFixed(2)} ms/tick`);
 console.log(`  worst tick ${maxMs.toFixed(0)} ms, active cells ${state.activeCells.length}`);

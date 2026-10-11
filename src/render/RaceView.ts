@@ -21,7 +21,7 @@ interface CarRig {
 export class RaceView {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 600);
+  private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 320);
   private cars: CarRig[] = [];
   private rings: THREE.Mesh[] = [];
   private worldGroup: THREE.Group | undefined;
@@ -34,15 +34,21 @@ export class RaceView {
   private camLook = new THREE.Vector3(0, 1, 10);
   private cameraReady = false;
   private frameHandle = 0;
+  private quality = 0;
+  private baseQuality = 0;
 
   constructor(private container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    const touch = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+    // Multisampling is expensive on phone GPUs, and phones start at a lower render resolution.
+    this.renderer = new THREE.WebGLRenderer({ antialias: !touch, powerPreference: 'high-performance' });
+    this.quality = touch ? 1 : 0;
+    this.baseQuality = 0;
+    this.applyQuality();
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block;touch-action:none';
 
     this.scene.background = new THREE.Color(0x232b52);
-    this.scene.fog = new THREE.Fog(0x232b52, 60, 260);
+    this.scene.fog = new THREE.Fog(0x232b52, 50, 230);
     this.scene.add(new THREE.HemisphereLight(0xb8c4ff, 0x3a3358, 2.4));
     const moon = new THREE.DirectionalLight(0xeaf0ff, 2.6);
     moon.position.set(-60, 120, -40);
@@ -68,7 +74,7 @@ export class RaceView {
 
     const { minX, maxX, minZ, maxZ } = map.bounds;
     const cx = (minX + maxX) / 20, cz = (minZ + maxZ) / 20, w = (maxX - minX) / 10 + 60, h = (maxZ - minZ) / 10 + 60;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshLambertMaterial({ color: 0x1b2036, flatShading: true }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: 0x1f2540 }));
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(cx, 0, cz);
     group.add(ground);
@@ -94,24 +100,29 @@ export class RaceView {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geo.computeVertexNormals();
-      group.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x565d78, side: THREE.DoubleSide })));
+      group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
     }
 
-    // Buildings: extruded footprints in a few muted night colours, merged into one mesh.
+    // Buildings: extruded footprints in a few muted night colours. They are merged per 100 m chunk, so the
+    // camera frustum can skip whole chunks instead of drawing the entire city every frame.
     if (map.buildings.length > 0) {
       const palette = [0x8a78c0, 0x6d86bd, 0x9a7ec4, 0x6fa3ad].map((c) => new THREE.Color(c));
-      const geos: THREE.BufferGeometry[] = [];
+      const chunks = new Map<string, THREE.BufferGeometry[]>();
       map.buildings.forEach((b, i) => {
         const shape = new THREE.Shape();
+        let sx = 0, sz = 0;
         for (let k = 0; k < b.pts.length; k += 2) {
           const x = b.pts[k]! / 10, z = b.pts[k + 1]! / 10;
+          sx += x;
+          sz += z;
           if (k === 0) shape.moveTo(x, -z);
           else shape.lineTo(x, -z);
         }
+        const n = b.pts.length / 2;
         const extruded = new THREE.ExtrudeGeometry(shape, { depth: b.h / 10, bevelEnabled: false });
         extruded.rotateX(-Math.PI / 2); // extrude along +Y; (x, -z) in shape space maps back to (x, z)
-        const g = extruded.toNonIndexed();
-        extruded.dispose();
+        const g = extruded.index ? extruded.toNonIndexed() : extruded;
+        if (g !== extruded) extruded.dispose();
         const c = palette[i % palette.length]!;
         const count = g.getAttribute('position').count;
         const colors = new Float32Array(count * 3);
@@ -122,14 +133,32 @@ export class RaceView {
         }
         g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         g.deleteAttribute('uv');
-        geos.push(g);
+        const key = `${Math.floor(sx / n / 100)},${Math.floor(sz / n / 100)}`;
+        const list = chunks.get(key);
+        if (list) list.push(g);
+        else chunks.set(key, [g]);
       });
-      const merged = mergeGeometries(geos, false);
-      if (merged) {
-        merged.computeVertexNormals();
-        group.add(new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
+      // Lighting is baked into the vertex colours (a fixed moon direction plus ambient), so the city can be
+      // drawn with a trivial unlit shader. This keeps the flat-shaded look at a fraction of the GPU cost.
+      const material = new THREE.MeshBasicMaterial({ vertexColors: true });
+      const moon = new THREE.Vector3(-0.45, 0.8, -0.3).normalize();
+      for (const geos of chunks.values()) {
+        const merged = mergeGeometries(geos, false);
+        if (merged) {
+          merged.computeVertexNormals();
+          const normals = merged.getAttribute('normal');
+          const colors = merged.getAttribute('color');
+          for (let v = 0; v < normals.count; v += 1) {
+            const lit = Math.max(0, normals.getX(v) * moon.x + normals.getY(v) * moon.y + normals.getZ(v) * moon.z);
+            const shade = 0.5 + 0.62 * lit;
+            colors.setXYZ(v, Math.min(1, colors.getX(v) * shade), Math.min(1, colors.getY(v) * shade), Math.min(1, colors.getZ(v) * shade));
+          }
+          merged.deleteAttribute('normal');
+          merged.computeBoundingSphere();
+          group.add(new THREE.Mesh(merged, material));
+        }
+        geos.forEach((g) => g.dispose());
       }
-      geos.forEach((g) => g.dispose());
     }
 
     // Walls and the boundary.
@@ -309,6 +338,44 @@ export class RaceView {
       });
     }
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Render-resolution steps: index 0 is the sharpest. Each step down cuts the pixels drawn substantially. */
+  static readonly PIXEL_RATIOS = [2, 1.5, 1, 0.75, 0.5] as const;
+
+  get qualityLevel(): number {
+    return this.quality;
+  }
+  get minQualityLevel(): number {
+    return this.baseQuality;
+  }
+  get maxQualityLevel(): number {
+    return RaceView.PIXEL_RATIOS.length - 1;
+  }
+
+  setQualityLevel(level: number): void {
+    this.quality = Math.max(0, Math.min(RaceView.PIXEL_RATIOS.length - 1, level));
+    this.applyQuality();
+  }
+
+  private applyQuality(): void {
+    const ratio = Math.min(window.devicePixelRatio, RaceView.PIXEL_RATIOS[this.quality] ?? 1);
+    this.renderer.setPixelRatio(ratio);
+    if (this.container.clientWidth > 0) this.resize();
+  }
+
+  /** Static facts about the GPU path, for the on-screen diagnostics. */
+  gpuInfo(): { gpu: string; width: number; height: number; ratio: number } {
+    const gl = this.renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    return { gpu, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, ratio: this.renderer.getPixelRatio() };
+  }
+
+  /** Draw-call and triangle counts of the last rendered frame (for performance diagnostics). */
+  stats(): { triangles: number; calls: number; geometries: number } {
+    const info = this.renderer.info;
+    return { triangles: info.render.triangles, calls: info.render.calls, geometries: info.memory.geometries };
   }
 
   /** World position of a checkpoint projected to screen NDC, for an off-screen arrow in the HUD. */

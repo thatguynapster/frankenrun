@@ -9,11 +9,13 @@ import { loadBakedMaps } from './lib/load-maps.ts';
 loadBakedMaps();
 const session = makeSessionConfig(process.env['MAP'] ?? 'route1');
 
+const Q = Number(process.env['QUANT'] ?? 1);
+const q = (v: number): number => Math.round(v / Q) * Q;
 const driver = (slot: number, tick: number): GameInput => ({
   ...DEFAULT_INPUT,
   ready: tick > 5,
   throttle: 100,
-  steer: Math.round(60 * Math.sin((tick + slot * 40) / 25)),
+  steer: q(Math.round(60 * Math.sin((tick + slot * 40) / 25))),
   arms: tick % 70 < 12,
   head: tick % 150 < 3,
   legs: false,
@@ -38,11 +40,13 @@ const clientOptions = () => ({
   localInputForTick: driver,
   encodeInput,
   decodeInput,
+  maxPredictionTicks: Number(process.env['MAXPRED'] ?? 8),
 });
 const steps = Number(process.env.STEPS ?? 600);
-const link = { latencyTicks: 3, jitterTicks: 2, lossRate: 0.02 };
+const link = { latencyTicks: Number(process.env['LAT'] ?? 3), jitterTicks: Number(process.env['JIT'] ?? 2), lossRate: Number(process.env['LOSS'] ?? 0.02) };
 
+const t0 = Date.now();
 const two = assertTwoClientConvergence({ roomConfig, clientOptions, steps, link, networkSeed: 7 });
-console.log('two-client convergence', JSON.stringify(two));
+console.log('two-client convergence', JSON.stringify(two), `wall ${Date.now() - t0} ms`);
 const late = assertLateJoinHydration({ roomConfig, clientOptions, steps, link, networkSeed: 9, initialClientCount: 1, beforeJoinSteps: 200, afterJoinSteps: 300 });
 console.log('late-join hydration  ', JSON.stringify(late));

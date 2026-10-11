@@ -29,7 +29,7 @@ export interface PreparedMap {
 }
 
 /** Edge length of a collision cell in metres. A car keeps its own cell and the 8 around it loaded. */
-export const CELL_M = 50;
+export const CELL_M = 20;
 
 const GROUND_LAYER = 1;
 const ALL = 0xffffffff;
@@ -191,15 +191,33 @@ function buildRoadIndex(map: MapData): (x: number, z: number) => boolean {
 const cellKey = (cx: number, cz: number): number => (cx + 2048) * 4096 + (cz + 2048);
 const cellOf = (x: number, z: number): number => cellKey(Math.floor(x / CELL_M), Math.floor(z / CELL_M));
 
-/** Groups every collidable building by the cell of its first footprint vertex (a stable, deterministic rule). */
+/**
+ * Groups every collidable building by each collision cell its footprint touches, so a long building is
+ * loaded whenever any part of it is within a car's neighbourhood (a building may appear in several cells;
+ * overlapping duplicate static colliders are harmless).
+ */
 function buildCellIndex(map: MapData): Map<number, number[]> {
   const index = new Map<number, number[]>();
   map.buildings.forEach((b, i) => {
     if (!b.hull) return;
-    const key = cellOf(m(b.hull[0]!), m(b.hull[1]!));
-    const list = index.get(key);
-    if (list) list.push(i);
-    else index.set(key, [i]);
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let k = 0; k < b.hull.length; k += 2) {
+      const x = m(b.hull[k]!), z = m(b.hull[k + 1]!);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    const cx0 = Math.floor(minX / CELL_M), cx1 = Math.floor(maxX / CELL_M);
+    const cz0 = Math.floor(minZ / CELL_M), cz1 = Math.floor(maxZ / CELL_M);
+    for (let cx = cx0; cx <= cx1; cx += 1) {
+      for (let cz = cz0; cz <= cz1; cz += 1) {
+        const key = cellKey(cx, cz);
+        const list = index.get(key);
+        if (list) list.push(i);
+        else index.set(key, [i]);
+      }
+    }
   });
   return index;
 }

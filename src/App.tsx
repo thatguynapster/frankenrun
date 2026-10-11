@@ -87,9 +87,17 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       <div className="panel center">
         <p className="title small">Connection problem</p>
         <p className="muted">{ui.error}</p>
-        <button className="btn primary" onClick={() => game.leave()}>
-          Back
-        </button>
+        {ui.errorDetail && ui.errorDetail !== ui.error && <p className="muted small">{ui.errorDetail}</p>}
+        <div className="row">
+          {ui.canRejoin && (
+            <button className="btn primary" onClick={() => void game.rejoin()}>
+              Rejoin race
+            </button>
+          )}
+          <button className={`btn ${ui.canRejoin ? '' : 'primary'}`} onClick={() => game.leave()}>
+            Back
+          </button>
+        </div>
       </div>
     );
   }
@@ -205,11 +213,13 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           </button>
         </div>
         <SteerZone game={game} />
-        {ui.roomCode && (
-          <div className="net">
-            Room {ui.roomCode} · {ui.connection} · rollbacks {ui.rollbackCount}
-          </div>
-        )}
+        <button className="gfx" onClick={() => game.cycleGraphics()}>
+          Graphics: {ui.graphics}
+        </button>
+        <div className="net">
+          <div>{ui.diag}</div>
+          {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection} · rollbacks ${ui.rollbackCount}`}</div>}
+        </div>
       </div>
       {frame.phase === 'RESULTS' && (
         <div className="panel center results">
