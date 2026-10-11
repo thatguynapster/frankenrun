@@ -11,7 +11,11 @@
     "preview": "vite preview",
     "deploy": "npm run build && rundot deploy",
     "format": "prettier \"{src,public}/**/*.{ts,tsx,js,jsx,json,css,html}\" --write",
-    "format:check": "prettier \"{src,public}/**/*.{ts,tsx,js,jsx,json,css,html}\" --check"
+    "format:check": "prettier \"{src,public}/**/*.{ts,tsx,js,jsx,json,css,html}\" --check",
+    "gen:identity": "node scripts/run-ts.mjs scripts/gen-identity.ts",
+    "sim:probe": "node scripts/run-ts.mjs scripts/sim-probe.ts",
+    "test:determinism": "node scripts/run-ts.mjs scripts/determinism-test.ts",
+    "test:network": "node scripts/run-ts.mjs scripts/network-test.ts"
   },
   "keywords": [
     "react",

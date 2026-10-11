@@ -1,0 +1,9 @@
+{
+  "rooms": [
+    {
+      "type": "deterministic",
+      "deterministic": true,
+      "config": { "maxPlayers": 2, "tickRateHz": 30 }
+    }
+  ]
+}

@@ -1,0 +1,601 @@
+// Deterministic race simulation. Plain data in, plain data out: stepGame never mutates its
+// input and never reads Math.random, Date, performance.now, the DOM or the network.
+// Time is counted in ticks (TICK_RATE ticks = 1 s).
+
+import {
+  applyDeterministicForces3D,
+  applyDeterministicImpulses3D,
+  applyDeterministicWorldEdit3D,
+  createDeterministicPhysicsWorld3D,
+  deterministicPhysicsBodyById3D,
+  stepDeterministicPhysicsWorld3D,
+  stepDeterministicVehicle3D,
+  type DeterministicPhysicsBody3D,
+  type DeterministicPhysicsJoint3D,
+  type DeterministicPhysicsWorld3D,
+  type DeterministicVehicle3D,
+  type DeterministicVehicleWheel3D,
+} from '@series-inc/rundot-syncplay/creator';
+import {
+  ARMS,
+  BASE_ACCEL,
+  BASE_TOP_SPEED,
+  BODIES,
+  CHASSIS_HALF,
+  CHECKPOINT_RADIUS,
+  COUNTDOWN_TICKS,
+  FINISH_WINDOW_TICKS,
+  GRAVITY_Y,
+  HEADS,
+  LEGS,
+  MASS_UNIT,
+  RESET_FREEZE_TICKS,
+  RESET_HOLD_TICKS,
+  RIDE_HEIGHT,
+  type LegsDef,
+} from './parts.js';
+import {
+  ARENA_HALF,
+  CHECKPOINTS,
+  OBSTACLES,
+  POLES,
+  START_DX,
+  START_X0,
+  START_Z,
+} from './track.js';
+
+export type Phase = 'BUILD' | 'COUNTDOWN' | 'RACING' | 'RESULTS';
+
+/** One tick of player input. Build selections and ready are only read during BUILD. */
+export interface GameInput {
+  readonly throttle: number; // -100..100, negative = reverse
+  readonly steer: number; // -100..100, positive = right
+  readonly arms: boolean;
+  readonly head: boolean;
+  readonly legs: boolean;
+  readonly reset: boolean;
+  readonly ready: boolean;
+  readonly legsSel: boolean; // equip Werewolf Legs
+  readonly armsSel: boolean; // equip Tentacles
+  readonly headSel: boolean; // equip Slime Gland
+}
+
+export const DEFAULT_INPUT: GameInput = {
+  throttle: 0,
+  steer: 0,
+  arms: false,
+  head: false,
+  legs: false,
+  reset: false,
+  ready: false,
+  legsSel: true,
+  armsSel: true,
+  headSel: true,
+};
+
+export interface Build {
+  readonly legs: boolean;
+  readonly arms: boolean;
+  readonly head: boolean;
+}
+
+export interface Swing {
+  readonly pole: number;
+  readonly maxLength: number;
+  readonly ticksLeft: number;
+}
+
+export interface PlayerState {
+  readonly slot: number;
+  readonly build: Build;
+  readonly ready: boolean;
+  /** Index of the next checkpoint to hit; equals CHECKPOINTS.length once finished. */
+  readonly nextCheckpoint: number;
+  readonly finishTick: number; // -1 until finished
+  readonly prevArms: boolean;
+  readonly prevHead: boolean;
+  readonly armsCooldown: number;
+  readonly headCooldown: number;
+  readonly trailLeft: number;
+  readonly spinLeft: number;
+  readonly swing: Swing | null;
+  readonly resetHold: number;
+  readonly frozenUntil: number;
+}
+
+export interface Slick {
+  readonly x: number;
+  readonly z: number;
+  readonly expires: number;
+  readonly owner: number;
+}
+
+export interface GameState {
+  readonly frame: number;
+  readonly phase: Phase;
+  readonly phaseStart: number;
+  readonly physics: DeterministicPhysicsWorld3D;
+  readonly players: readonly PlayerState[];
+  readonly slicks: readonly Slick[];
+  readonly finishOrder: readonly number[];
+}
+
+export interface SessionConfig {
+  readonly game: string;
+  readonly players: number;
+  readonly seed: number;
+  readonly tickRateHz: number;
+  readonly version: number;
+}
+
+export interface PlayerView {
+  readonly slot: number;
+  readonly build: Build;
+  readonly ready: boolean;
+  readonly present: boolean;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly qx: number;
+  readonly qy: number;
+  readonly qz: number;
+  readonly qw: number;
+  readonly speed: number; // m/s
+  readonly nextCheckpoint: number;
+  readonly finishTick: number;
+  readonly armsCooldown: number;
+  readonly headCooldown: number;
+  readonly swingPole: number; // -1 when not swinging
+  readonly trailing: boolean;
+}
+
+export interface GameProjection {
+  readonly frame: number;
+  readonly phase: Phase;
+  readonly phaseTicks: number; // ticks elapsed in the current phase
+  readonly players: readonly PlayerView[];
+  readonly slicks: readonly Slick[];
+  readonly finishOrder: readonly number[];
+}
+
+const GROUND_LAYER = 1;
+const CAR_LAYER = 2;
+const ALL = 0xffffffff;
+
+const carId = (slot: number): string => `car-${slot}`;
+const ropeId = (slot: number): string => `rope-${slot}`;
+
+const clampInt = (value: number, lo: number, hi: number): number => {
+  const v = Math.round(value);
+  return v < lo ? lo : v > hi ? hi : v;
+};
+
+function legsOf(build: Build): LegsDef {
+  return build.legs ? LEGS.werewolf : LEGS.none;
+}
+
+function staticBodies(): DeterministicPhysicsBody3D[] {
+  const still = { vx: 0, vy: 0, vz: 0 } as const;
+  const wallHeight = 6;
+  const wall = (id: string, x: number, z: number, halfX: number, halfZ: number): DeterministicPhysicsBody3D => ({
+    id,
+    kind: 'static',
+    x,
+    y: wallHeight / 2,
+    z,
+    ...still,
+    shape: { type: 'box', halfX, halfY: wallHeight / 2, halfZ },
+    layer: GROUND_LAYER,
+    mask: ALL,
+    material: { friction: 0.4, restitution: 0.2 },
+  });
+  return [
+    {
+      id: 'ground',
+      kind: 'static',
+      x: 0,
+      y: -0.5,
+      z: 0,
+      ...still,
+      shape: { type: 'box', halfX: ARENA_HALF + 20, halfY: 0.5, halfZ: ARENA_HALF + 20 },
+      layer: GROUND_LAYER,
+      mask: ALL,
+      material: { friction: 8, restitution: 0 },
+    },
+    wall('wall-n', 0, ARENA_HALF + 1, ARENA_HALF + 2, 1),
+    wall('wall-s', 0, -ARENA_HALF - 1, ARENA_HALF + 2, 1),
+    wall('wall-e', ARENA_HALF + 1, 0, 1, ARENA_HALF),
+    wall('wall-w', -ARENA_HALF - 1, 0, 1, ARENA_HALF),
+    ...OBSTACLES.map((o) => ({
+      id: o.id,
+      kind: 'static' as const,
+      x: o.x,
+      y: o.height / 2,
+      z: o.z,
+      ...still,
+      shape: { type: 'box' as const, halfX: o.halfX, halfY: o.height / 2, halfZ: o.halfZ },
+      layer: GROUND_LAYER,
+      mask: ALL,
+      material: { friction: 0.4, restitution: 0.3 },
+    })),
+    ...POLES.map((p) => ({
+      id: p.id,
+      kind: 'static' as const,
+      x: p.x,
+      y: 1.5,
+      z: p.z,
+      ...still,
+      shape: { type: 'box' as const, halfX: 0.25, halfY: 1.5, halfZ: 0.25 },
+      layer: GROUND_LAYER,
+      mask: ALL,
+      material: { friction: 0.4, restitution: 0.2 },
+    })),
+  ];
+}
+
+function chassisBody(slot: number, build: Build, x: number, z: number, yaw: number): DeterministicPhysicsBody3D {
+  const body = BODIES[0]!;
+  const legs = legsOf(build);
+  const drive = BASE_ACCEL * body.accel * legs.driveMul;
+  const topPerTick = (BASE_TOP_SPEED * legs.topSpeedMul) / 30;
+  const half = yaw / 2;
+  return {
+    id: carId(slot),
+    kind: 'dynamic',
+    x,
+    y: RIDE_HEIGHT,
+    z,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    mass: MASS_UNIT * body.mass,
+    // Linear damping is a per-tick velocity retention factor: top speed = accel / (1 - retention).
+    linearDamping: 1 - drive / topPerTick,
+    angularDamping: 0.93,
+    orientation: { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) },
+    angularVel: { x: 0, y: 0, z: 0 },
+    shape: { type: 'box', halfX: CHASSIS_HALF.x, halfY: CHASSIS_HALF.y, halfZ: CHASSIS_HALF.z },
+    layer: CAR_LAYER,
+    mask: ALL,
+    material: { friction: 0.3, restitution: 0.3 },
+  };
+}
+
+function wheel(x: number, z: number, steered: boolean, grip: number, massRatio: number): DeterministicVehicleWheel3D {
+  return {
+    localAnchor: { x, y: -0.2, z },
+    suspensionDir: { x: 0, y: -1, z: 0 },
+    suspensionRestLength: 0.5,
+    suspensionMaxTravel: 0.3,
+    radius: 0.35,
+    stiffness: 55 * massRatio,
+    damping: 160 * massRatio,
+    grip,
+    maxSteerAngleTurns: 0.1,
+    isSteered: steered,
+    isDriven: true,
+  };
+}
+
+function vehicleFor(slot: number, build: Build, gripMul: number): DeterministicVehicle3D {
+  const body = BODIES[0]!;
+  const legs = legsOf(build);
+  const grip = legs.gripMul * gripMul * body.turn;
+  const massRatio = body.mass;
+  const wx = CHASSIS_HALF.x - 0.05;
+  const wz = CHASSIS_HALF.z - 0.2;
+  return {
+    chassisId: carId(slot),
+    driveForce: MASS_UNIT * massRatio * BASE_ACCEL * body.accel * legs.driveMul,
+    brakeForce: MASS_UNIT * massRatio * 0.02,
+    wheels: [
+      wheel(-wx, wz, true, grip, massRatio),
+      wheel(wx, wz, true, grip, massRatio),
+      wheel(-wx, -wz, false, grip, massRatio),
+      wheel(wx, -wz, false, grip, massRatio),
+    ],
+  };
+}
+
+function startPose(slot: number): { x: number; z: number } {
+  return { x: START_X0 + slot * START_DX, z: START_Z };
+}
+
+function newPlayer(slot: number): PlayerState {
+  return {
+    slot,
+    build: { legs: true, arms: true, head: true },
+    ready: false,
+    nextCheckpoint: 0,
+    finishTick: -1,
+    prevArms: false,
+    prevHead: false,
+    armsCooldown: 0,
+    headCooldown: 0,
+    trailLeft: 0,
+    spinLeft: 0,
+    swing: null,
+    resetHold: 0,
+    frozenUntil: 0,
+  };
+}
+
+export function createGameState(config: SessionConfig): GameState {
+  const players: PlayerState[] = [];
+  for (let slot = 0; slot < config.players; slot += 1) players.push(newPlayer(slot));
+  return {
+    frame: 0,
+    phase: 'BUILD',
+    phaseStart: 0,
+    physics: createDeterministicPhysicsWorld3D(staticBodies()),
+    players,
+    slicks: [],
+    finishOrder: [],
+  };
+}
+
+function normaliseInput(input: GameInput | undefined): GameInput {
+  if (input === undefined) return DEFAULT_INPUT;
+  return {
+    ...input,
+    throttle: clampInt(input.throttle, -100, 100),
+    steer: clampInt(input.steer, -100, 100),
+  };
+}
+
+function slickGripMul(slicks: readonly Slick[], x: number, z: number): number {
+  const radius = HEADS.slime.slickRadius;
+  for (const s of slicks) {
+    if (Math.hypot(x - s.x, z - s.z) <= radius) return HEADS.slime.slickGripMul;
+  }
+  return 1;
+}
+
+function nearestPole(x: number, z: number, range: number): { index: number; distance: number } | null {
+  let best: { index: number; distance: number } | null = null;
+  for (let i = 0; i < POLES.length; i += 1) {
+    const p = POLES[i]!;
+    const d = Math.hypot(p.x - x, p.z - z);
+    if (d <= range && (best === null || d < best.distance)) best = { index: i, distance: d };
+  }
+  return best;
+}
+
+function yawToward(fromX: number, fromZ: number, toX: number, toZ: number): number {
+  return Math.atan2(toX - fromX, toZ - fromZ);
+}
+
+export function stepGame(state: GameState, rawInputs: readonly GameInput[]): GameState {
+  const frame = state.frame + 1;
+  const inputs = state.players.map((p) => normaliseInput(rawInputs[p.slot]));
+  let world = state.physics;
+  let players = state.players;
+  let slicks = state.slicks;
+  let phase = state.phase;
+  let phaseStart = state.phaseStart;
+  let finishOrder = state.finishOrder;
+
+  if (phase === 'BUILD') {
+    players = players.map((p, i) => {
+      const input = inputs[i]!;
+      return { ...p, ready: input.ready, build: { legs: input.legsSel, arms: input.armsSel, head: input.headSel } };
+    });
+    if (players.length > 0 && players.every((p) => p.ready)) {
+      world = applyDeterministicWorldEdit3D(world, {
+        add: players.map((p) => {
+          const pose = startPose(p.slot);
+          return chassisBody(p.slot, p.build, pose.x, pose.z, 0);
+        }),
+      });
+      phase = 'COUNTDOWN';
+      phaseStart = frame;
+    }
+  } else if (phase === 'COUNTDOWN' && frame - phaseStart >= COUNTDOWN_TICKS) {
+    phase = 'RACING';
+    phaseStart = frame;
+  }
+
+  const driving = phase === 'COUNTDOWN' || phase === 'RACING' || phase === 'RESULTS';
+  const racing = phase === 'RACING';
+  const joints: DeterministicPhysicsJoint3D[] = [];
+  const ropesToRemove: string[] = [];
+
+  if (driving) {
+    const impulses: { bodyId: string; impulse: { x: number; y: number; z: number }; worldPoint: { x: number; y: number; z: number } }[] = [];
+    const torques: { bodyId: string; torque: { x: number; y: number; z: number } }[] = [];
+    const respawns: DeterministicPhysicsBody3D[] = [];
+    const newSlicks: Slick[] = [];
+
+    players = players.map((player, i) => {
+      const input = inputs[i]!;
+      const body = deterministicPhysicsBodyById3D(world, carId(player.slot));
+      if (body === undefined) return player;
+      let p = player;
+
+      // --- abilities (rising edge, ticks only) ---
+      const armsEdge = input.arms && !p.prevArms;
+      const headEdge = input.head && !p.prevHead;
+      let armsCooldown = p.armsCooldown > 0 ? p.armsCooldown - 1 : 0;
+      let headCooldown = p.headCooldown > 0 ? p.headCooldown - 1 : 0;
+      let trailLeft = p.trailLeft;
+      let spinLeft = p.spinLeft;
+      let swing = p.swing;
+      const frozen = !racing || frame < p.frozenUntil;
+
+      if (racing && !frozen) {
+        if (p.build.arms && swing === null && armsEdge && armsCooldown === 0) {
+          const hit = nearestPole(body.x, body.z, ARMS.tentacles.grabRange);
+          if (hit !== null) {
+            swing = { pole: hit.index, maxLength: Math.max(hit.distance, 2), ticksLeft: ARMS.tentacles.swingTicks };
+          } else {
+            spinLeft = ARMS.tentacles.missSpinTicks;
+            armsCooldown = ARMS.tentacles.missCooldownTicks;
+          }
+        } else if (swing !== null) {
+          if (!input.arms || swing.ticksLeft <= 1) {
+            ropesToRemove.push(ropeId(p.slot));
+            swing = null;
+            armsCooldown = ARMS.tentacles.cooldownTicks;
+          } else {
+            swing = { ...swing, ticksLeft: swing.ticksLeft - 1 };
+          }
+        }
+
+        if (p.build.head && headEdge && headCooldown === 0 && trailLeft === 0) {
+          trailLeft = HEADS.slime.trailTicks;
+          headCooldown = HEADS.slime.cooldownTicks;
+        }
+        if (trailLeft > 0) {
+          if ((HEADS.slime.trailTicks - trailLeft) % HEADS.slime.dropEveryTicks === 0) {
+            newSlicks.push({
+              x: body.x,
+              z: body.z,
+              expires: frame + HEADS.slime.slickLifeTicks,
+              owner: p.slot,
+            });
+          }
+          trailLeft -= 1;
+        }
+      }
+
+      if (swing !== null) {
+        const pole = POLES[swing.pole]!;
+        joints.push({
+          id: ropeId(p.slot),
+          type: 'distance',
+          a: carId(p.slot),
+          b: pole.id,
+          anchorA: { x: 0, y: 0, z: 0 },
+          anchorB: { x: 0, y: 0, z: 0 },
+          maxLength: swing.maxLength,
+        });
+      }
+
+      // --- reset ---
+      let resetHold = p.resetHold;
+      let frozenUntil = p.frozenUntil;
+      if (racing && input.reset) {
+        resetHold += 1;
+        if (resetHold >= RESET_HOLD_TICKS) {
+          resetHold = 0;
+          const last = p.nextCheckpoint > 0 ? CHECKPOINTS[p.nextCheckpoint - 1]! : startPose(p.slot);
+          const target = CHECKPOINTS[Math.min(p.nextCheckpoint, CHECKPOINTS.length - 1)]!;
+          respawns.push(chassisBody(p.slot, p.build, last.x, last.z, yawToward(last.x, last.z, target.x, target.z)));
+          frozenUntil = frame + RESET_FREEZE_TICKS;
+          if (swing !== null) {
+            ropesToRemove.push(ropeId(p.slot));
+            swing = null;
+          }
+        }
+      } else {
+        resetHold = 0;
+      }
+
+      // --- vehicle controls ---
+      const live = racing && frame >= frozenUntil;
+      const gripMul = slickGripMul(state.slicks, body.x, body.z);
+      const vehicle = vehicleFor(p.slot, p.build, gripMul);
+      const result = stepDeterministicVehicle3D(vehicle, {
+        throttle: live ? clampInt(input.throttle / 10, -10, 10) : 0,
+        steer: live ? clampInt(input.steer / 10, -10, 10) : 0,
+        brake: live ? 0 : 10,
+      }, world);
+      for (const imp of result.impulses) {
+        impulses.push({ bodyId: imp.bodyId, impulse: imp.impulse, worldPoint: imp.point });
+      }
+      if (spinLeft > 0) {
+        torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: ARMS.tentacles.missSpinTorque * MASS_UNIT * 0.001, z: 0 } });
+        spinLeft -= 1;
+      }
+
+      p = {
+        ...p,
+        prevArms: input.arms,
+        prevHead: input.head,
+        armsCooldown,
+        headCooldown,
+        trailLeft,
+        spinLeft,
+        swing,
+        resetHold,
+        frozenUntil,
+      };
+      return p;
+    });
+
+    if (impulses.length > 0) world = applyDeterministicImpulses3D(world, impulses);
+    if (torques.length > 0) world = applyDeterministicForces3D(world, torques);
+    if (respawns.length > 0) world = applyDeterministicWorldEdit3D(world, { replace: respawns });
+    if (ropesToRemove.length > 0) world = applyDeterministicWorldEdit3D(world, { removeJointIds: ropesToRemove });
+    slicks = [...state.slicks.filter((s) => s.expires > frame), ...newSlicks];
+  }
+
+  world = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints }).world;
+
+  if (racing) {
+    const finishedNow: number[] = [];
+    players = players.map((p) => {
+      if (p.finishTick >= 0) return p;
+      const body = deterministicPhysicsBodyById3D(world, carId(p.slot));
+      if (body === undefined) return p;
+      const cp = CHECKPOINTS[p.nextCheckpoint];
+      if (cp === undefined) return p;
+      if (Math.hypot(body.x - cp.x, body.z - cp.z) > CHECKPOINT_RADIUS) return p;
+      const next = p.nextCheckpoint + 1;
+      if (next >= CHECKPOINTS.length) {
+        finishedNow.push(p.slot);
+        return { ...p, nextCheckpoint: next, finishTick: frame };
+      }
+      return { ...p, nextCheckpoint: next };
+    });
+    if (finishedNow.length > 0) finishOrder = [...finishOrder, ...finishedNow];
+    const allDone = players.every((p) => p.finishTick >= 0);
+    const firstFinish = finishOrder.length > 0 ? players[finishOrder[0]!]!.finishTick : -1;
+    if (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS)) {
+      phase = 'RESULTS';
+      phaseStart = frame;
+    }
+  }
+
+  return { frame, phase, phaseStart, physics: world, players, slicks, finishOrder };
+}
+
+export function projectGame(state: GameState): GameProjection {
+  const players: PlayerView[] = state.players.map((p) => {
+    const body = deterministicPhysicsBodyById3D(state.physics, carId(p.slot));
+    const present = body !== undefined;
+    const pose = present
+      ? {
+          x: body.x,
+          y: body.y,
+          z: body.z,
+          qx: body.orientation?.x ?? 0,
+          qy: body.orientation?.y ?? 0,
+          qz: body.orientation?.z ?? 0,
+          qw: body.orientation?.w ?? 1,
+          speed: Math.hypot(body.vx, body.vz) * 30,
+        }
+      : { ...startPose(p.slot), y: RIDE_HEIGHT, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0 };
+    return {
+      slot: p.slot,
+      build: p.build,
+      ready: p.ready,
+      present,
+      ...pose,
+      nextCheckpoint: p.nextCheckpoint,
+      finishTick: p.finishTick,
+      armsCooldown: p.armsCooldown,
+      headCooldown: p.headCooldown,
+      swingPole: p.swing === null ? -1 : p.swing.pole,
+      trailing: p.trailLeft > 0,
+    };
+  });
+  return {
+    frame: state.frame,
+    phase: state.phase,
+    phaseTicks: state.frame - state.phaseStart,
+    players,
+    slicks: state.slicks,
+    finishOrder: state.finishOrder,
+  };
+}
