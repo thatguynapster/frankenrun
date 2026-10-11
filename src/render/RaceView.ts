@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GameProjection, PlayerView } from '../sim/game.js';
-import { ARENA_HALF, CHECKPOINTS, OBSTACLES, POLES } from '../sim/track.js';
+import type { MapData } from '../sim/mapdata.js';
 import { CHASSIS_HALF, CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
 
 const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf];
@@ -23,6 +24,8 @@ export class RaceView {
   private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 600);
   private cars: CarRig[] = [];
   private rings: THREE.Mesh[] = [];
+  private worldGroup: THREE.Group | undefined;
+  private anchors: { x: number; z: number }[] = [];
   private slickPool: THREE.Mesh[] = [];
   private slickGeo = new THREE.CircleGeometry(HEADS.slime.slickRadius, 20);
   private slickMat = new THREE.MeshBasicMaterial({ color: 0x4dff6a, transparent: true, opacity: 0.45 });
@@ -38,71 +41,140 @@ export class RaceView {
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block;touch-action:none';
 
-    this.scene.background = new THREE.Color(0x1a2142);
-    this.scene.fog = new THREE.Fog(0x1a2142, 70, 300);
+    this.scene.background = new THREE.Color(0x232b52);
+    this.scene.fog = new THREE.Fog(0x232b52, 60, 260);
     this.scene.add(new THREE.HemisphereLight(0xb8c4ff, 0x3a3358, 2.4));
     const moon = new THREE.DirectionalLight(0xeaf0ff, 2.6);
     moon.position.set(-60, 120, -40);
     this.scene.add(moon);
 
-    this.buildWorld();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
     this.resize();
   }
 
-  private buildWorld(): void {
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry((ARENA_HALF + 20) * 2, (ARENA_HALF + 20) * 2),
-      new THREE.MeshLambertMaterial({ color: 0x343d5c, flatShading: true }),
-    );
+  /** Builds (or rebuilds) the static city for a baked map. Everything is merged into a handful of meshes. */
+  setMap(map: MapData): void {
+    if (this.worldGroup) {
+      this.scene.remove(this.worldGroup);
+      this.worldGroup.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry.dispose();
+      });
+    }
+    const group = new THREE.Group();
+    this.worldGroup = group;
+    this.rings = [];
+    this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
+
+    const { minX, maxX, minZ, maxZ } = map.bounds;
+    const cx = (minX + maxX) / 20, cz = (minZ + maxZ) / 20, w = (maxX - minX) / 10 + 60, h = (maxZ - minZ) / 10 + 60;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshLambertMaterial({ color: 0x1b2036, flatShading: true }));
     ground.rotation.x = -Math.PI / 2;
-    this.scene.add(ground);
-    const grid = new THREE.GridHelper(ARENA_HALF * 2, ARENA_HALF / 5, 0x2c3552, 0x232a40);
-    grid.position.y = 0.02;
-    this.scene.add(grid);
-
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0x3a2f55, flatShading: true });
-    const wall = (x: number, z: number, hx: number, hz: number): void => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, 6, hz * 2), wallMat);
-      m.position.set(x, 3, z);
-      this.scene.add(m);
-    };
-    wall(0, ARENA_HALF + 1, ARENA_HALF + 2, 1);
-    wall(0, -ARENA_HALF - 1, ARENA_HALF + 2, 1);
-    wall(ARENA_HALF + 1, 0, 1, ARENA_HALF);
-    wall(-ARENA_HALF - 1, 0, 1, ARENA_HALF);
-
-    const boxMat = new THREE.MeshLambertMaterial({ color: 0x5b4a7a, flatShading: true });
-    for (const o of OBSTACLES) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(o.halfX * 2, o.height, o.halfZ * 2), boxMat);
-      m.position.set(o.x, o.height / 2, o.z);
-      this.scene.add(m);
+    ground.position.set(cx, 0, cz);
+    group.add(ground);
+    if (map.roads.length === 0) {
+      const grid = new THREE.GridHelper(Math.max(w, h), Math.max(w, h) / 10, 0x3a4468, 0x2c3552);
+      grid.position.set(cx, 0.02, cz);
+      group.add(grid);
     }
 
+    // Roads: one flat ribbon per segment, merged into a single mesh.
+    if (map.roads.length > 0) {
+      const positions: number[] = [];
+      for (const road of map.roads) {
+        const hw = road.hw / 10;
+        for (let i = 0; i + 3 < road.pts.length; i += 2) {
+          const x0 = road.pts[i]! / 10, z0 = road.pts[i + 1]! / 10, x1 = road.pts[i + 2]! / 10, z1 = road.pts[i + 3]! / 10;
+          const len = Math.hypot(x1 - x0, z1 - z0) || 1;
+          const nx = (-(z1 - z0) / len) * hw, nz = ((x1 - x0) / len) * hw;
+          const y = 0.04;
+          positions.push(x0 + nx, y, z0 + nz, x1 + nx, y, z1 + nz, x0 - nx, y, z0 - nz, x1 + nx, y, z1 + nz, x1 - nx, y, z1 - nz, x0 - nx, y, z0 - nz);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.computeVertexNormals();
+      group.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x565d78, side: THREE.DoubleSide })));
+    }
+
+    // Buildings: extruded footprints in a few muted night colours, merged into one mesh.
+    if (map.buildings.length > 0) {
+      const palette = [0x8a78c0, 0x6d86bd, 0x9a7ec4, 0x6fa3ad].map((c) => new THREE.Color(c));
+      const geos: THREE.BufferGeometry[] = [];
+      map.buildings.forEach((b, i) => {
+        const shape = new THREE.Shape();
+        for (let k = 0; k < b.pts.length; k += 2) {
+          const x = b.pts[k]! / 10, z = b.pts[k + 1]! / 10;
+          if (k === 0) shape.moveTo(x, -z);
+          else shape.lineTo(x, -z);
+        }
+        const extruded = new THREE.ExtrudeGeometry(shape, { depth: b.h / 10, bevelEnabled: false });
+        extruded.rotateX(-Math.PI / 2); // extrude along +Y; (x, -z) in shape space maps back to (x, z)
+        const g = extruded.toNonIndexed();
+        extruded.dispose();
+        const c = palette[i % palette.length]!;
+        const count = g.getAttribute('position').count;
+        const colors = new Float32Array(count * 3);
+        for (let v = 0; v < count; v += 1) {
+          colors[v * 3] = c.r;
+          colors[v * 3 + 1] = c.g;
+          colors[v * 3 + 2] = c.b;
+        }
+        g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        g.deleteAttribute('uv');
+        geos.push(g);
+      });
+      const merged = mergeGeometries(geos, false);
+      if (merged) {
+        merged.computeVertexNormals();
+        group.add(new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
+      }
+      geos.forEach((g) => g.dispose());
+    }
+
+    // Walls and the boundary.
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x6a5a86, flatShading: true });
+    for (const wl of map.walls) {
+      const [x0, z0, x1, z1] = wl.pts;
+      const len = Math.hypot(x1 - x0, z1 - z0) / 10;
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, wl.h / 10, 0.3), wallMat);
+      mesh.position.set((x0 + x1) / 20, wl.h / 20, (z0 + z1) / 20);
+      mesh.rotation.y = -Math.atan2(z1 - z0, x1 - x0);
+      group.add(mesh);
+    }
+    const edge = new THREE.MeshLambertMaterial({ color: 0x3a2f55, flatShading: true });
+    const hx = (maxX - minX) / 20, hz = (maxZ - minZ) / 20;
+    const boundary: [number, number, number, number][] = [
+      [cx, cz + hz + 1, hx * 2 + 4, 2],
+      [cx, cz - hz - 1, hx * 2 + 4, 2],
+      [cx + hx + 1, cz, 2, hz * 2],
+      [cx - hx - 1, cz, 2, hz * 2],
+    ];
+    for (const [bx, bz, bw, bd] of boundary) {
+      const edgeMesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 6, bd), edge);
+      edgeMesh.position.set(bx, 3, bz);
+      group.add(edgeMesh);
+    }
+
+    // Tentacle anchors.
     const poleMat = new THREE.MeshLambertMaterial({ color: ARMS_COLOR, emissive: 0x3a1566, flatShading: true });
-    for (const p of POLES) {
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 8), poleMat);
-      m.position.set(p.x, 1.5, p.z);
-      this.scene.add(m);
-    }
+    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 8), poleMat, Math.max(1, this.anchors.length));
+    this.anchors.forEach((a, i) => poles.setMatrixAt(i, new THREE.Matrix4().makeTranslation(a.x, 1.5, a.z)));
+    poles.count = this.anchors.length;
+    group.add(poles);
 
-    CHECKPOINTS.forEach((cp, i) => {
-      const final = i === CHECKPOINTS.length - 1;
+    // Checkpoints.
+    map.checkpoints.forEach((cp, i) => {
+      const final = i === map.checkpoints.length - 1;
       const ring = new THREE.Mesh(
         new THREE.CylinderGeometry(CHECKPOINT_RADIUS, CHECKPOINT_RADIUS, 14, 32, 1, true),
-        new THREE.MeshBasicMaterial({
-          color: final ? 0xffd23b : 0x3bd1ff,
-          transparent: true,
-          opacity: 0.18,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-        }),
+        new THREE.MeshBasicMaterial({ color: final ? 0xffd23b : 0x3bd1ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }),
       );
-      ring.position.set(cp.x, 7, cp.z);
-      this.scene.add(ring);
+      ring.position.set(cp.x / 10, 7, cp.z / 10);
+      group.add(ring);
       this.rings.push(ring);
     });
+    this.scene.add(group);
   }
 
   private makeCar(slot: number): CarRig {
@@ -185,7 +257,7 @@ export class RaceView {
     rig.head.visible = p.build.head;
     rig.head.children[0]?.scale.setScalar(p.trailing ? 1.25 : 1);
     if (p.swingPole >= 0) {
-      const pole = POLES[p.swingPole];
+      const pole = this.anchors[p.swingPole];
       if (pole !== undefined) {
         const pos = rig.rope.geometry.attributes['position'] as THREE.BufferAttribute;
         pos.setXYZ(0, p.x, p.y + 0.4, p.z);

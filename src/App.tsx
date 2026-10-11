@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type UiState } from './Game';
-import { CHECKPOINTS } from './sim/track';
 import { ARMS, HEADS } from './sim/parts';
 import type { Build } from './sim/game';
 import './style.css';
@@ -163,10 +162,16 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             Pos {position}/{frame.players.length}
           </span>
           <span>
-            CP {Math.min(me.nextCheckpoint, CHECKPOINTS.length)}/{CHECKPOINTS.length}
+            CP {Math.min(me.nextCheckpoint, ui.checkpointTotal)}/{ui.checkpointTotal}
           </span>
           <span>{Math.round(me.speed * 3.6)} km/h</span>
         </div>
+        {ui.hint && me.finishTick < 0 && (
+          <div className="waypoint">
+            <div className="arrow" style={{ transform: `rotate(${-ui.hint.angle}deg)` }} />
+            <span>{Math.round(ui.hint.distance)} m</span>
+          </div>
+        )}
         {frame.phase === 'COUNTDOWN' && <div className="big">{Math.max(1, Math.ceil((90 - frame.phaseTicks) / TICK))}</div>}
         {frame.phase === 'RACING' && frame.phaseTicks < 30 && <div className="big">GO!</div>}
         <div className="abilities">

@@ -15,7 +15,10 @@
     "gen:identity": "node scripts/run-ts.mjs scripts/gen-identity.ts",
     "sim:probe": "node scripts/run-ts.mjs scripts/sim-probe.ts",
     "test:determinism": "node scripts/run-ts.mjs scripts/determinism-test.ts",
-    "test:network": "node scripts/run-ts.mjs scripts/network-test.ts"
+    "test:network": "node scripts/run-ts.mjs scripts/network-test.ts",
+    "test:perf": "node scripts/run-ts.mjs scripts/perf-test.ts",
+    "bake:route1": "node scripts/run-ts.mjs bake/bake-map.ts route1 && npm run gen:identity",
+    "test:route": "node scripts/run-ts.mjs scripts/route-probe.ts"
   },
   "keywords": [
     "react",
@@ -27,6 +30,7 @@
   "author": "",
   "license": "SEE LICENSE IN LICENSE.txt",
   "devDependencies": {
+    "@osmix/pbf": "^0.0.10",
     "@revenuecat/purchases-js": "^1.70.0",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",

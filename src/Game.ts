@@ -1,8 +1,11 @@
 import type { SyncplayRunnerSnapshot } from '@series-inc/rundot-syncplay/browser';
 import { Controls } from './input/Controls.js';
+import { ensureMap } from './net/mapLoader.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
 import { DEFAULT_INPUT, type Build, type GameProjection } from './sim/game.js';
+import type { MapData } from './sim/mapdata.js';
+import { DEFAULT_MAP } from './sim/runtime.js';
 
 export type Screen = 'title' | 'connecting' | 'play' | 'error';
 
@@ -20,6 +23,10 @@ export interface UiState {
   readonly occupied: number;
   readonly maxPlayers: number;
   readonly rttMs: number;
+  /** Number of checkpoints on the current map. */
+  readonly checkpointTotal: number;
+  /** Direction to the next checkpoint relative to the car's heading (degrees, + = to the left) and distance in metres. */
+  readonly hint: { readonly angle: number; readonly distance: number } | null;
 }
 
 type Listener = (state: UiState) => void;
@@ -40,6 +47,7 @@ export class Game {
   private snapshot: SyncplayRunnerSnapshot<GameProjection> | undefined;
   private screen: Screen = 'title';
   private error = '';
+  private map: MapData | undefined;
   private build: Build = { legs: true, arms: true, head: true };
   private ready = false;
   private lastNow = 0;
@@ -65,8 +73,21 @@ export class Game {
     return () => this.listeners.delete(listener);
   }
 
+  private hint(frame: GameProjection | undefined, slot: number): UiState['hint'] {
+    const me = frame?.players[slot];
+    if (!frame || !me || !this.map || frame.phase !== 'RACING') return null;
+    const cp = this.map.checkpoints[me.nextCheckpoint];
+    if (!cp) return null;
+    // Forward vector of the car from its orientation (+z forward, +x is the car's left).
+    const fx = 2 * (me.qx * me.qz + me.qw * me.qy), fz = 1 - 2 * (me.qx * me.qx + me.qy * me.qy);
+    const dx = cp.x / 10 - me.x, dz = cp.z / 10 - me.z;
+    const angle = (Math.atan2(fz * dx - fx * dz, fx * dx + fz * dz) * 180) / Math.PI;
+    return { angle, distance: Math.hypot(dx, dz) };
+  }
+
   state(): UiState {
     const snap = this.snapshot;
+    const frame = snap?.interpolatedRenderState ?? snap?.renderState;
     return {
       screen: this.screen,
       status: snap?.status ?? 'offline',
@@ -81,6 +102,8 @@ export class Game {
       occupied: snap?.occupancy?.occupied ?? 0,
       maxPlayers: snap?.occupancy?.maxPlayers ?? 0,
       rttMs: Math.round((snap?.netStats as { rttMs?: number } | null | undefined)?.rttMs ?? 0),
+      checkpointTotal: this.map?.checkpoints.length ?? 0,
+      hint: this.hint(frame, snap?.localSlot ?? 0),
     };
   }
 
@@ -113,6 +136,9 @@ export class Game {
     this.ready = false;
     this.emit();
     try {
+      // The map must be loaded and digest-verified before any session starts: it is a deterministic input.
+      this.map = await ensureMap(DEFAULT_MAP);
+      this.view.setMap(this.map);
       await start();
       this.screen = 'play';
     } catch (e) {

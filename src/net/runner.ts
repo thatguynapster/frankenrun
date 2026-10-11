@@ -8,13 +8,7 @@ import {
 } from '@series-inc/rundot-syncplay/browser';
 import { DEFAULT_INPUT, type GameInput, type GameProjection, type PlayerView } from '../sim/game.js';
 import { decodeInput, encodeInput } from '../sim/input-codec.js';
-import {
-  createGameRuntime,
-  runtimeIdentity,
-  sessionConfig,
-  sessionConfigBytes,
-  sessionConfigDigest,
-} from '../sim/runtime.js';
+import { createGameRuntime, DEFAULT_MAP, makeSessionConfig, PLAYERS, runtimeIdentity } from '../sim/runtime.js';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
@@ -61,24 +55,25 @@ export function createRunner(): FrankenRunner {
 }
 
 /** Offline practice: a real rollback session with an idle bot that readies up immediately. */
-export async function startPractice(runner: FrankenRunner): Promise<void> {
+export async function startPractice(runner: FrankenRunner, map: string = DEFAULT_MAP): Promise<void> {
   await runner.start({
     mode: 'offline',
     identity: runtimeIdentity,
-    sessionConfigBytes,
-    playerCount: sessionConfig.players,
+    sessionConfigBytes: makeSessionConfig(map).bytes,
+    playerCount: PLAYERS,
     localSlot: 0,
     botInputForTick: () => ({ ...DEFAULT_INPUT, ready: true }),
   });
 }
 
-export async function hostRace(runner: FrankenRunner): Promise<string> {
+export async function hostRace(runner: FrankenRunner, map: string = DEFAULT_MAP): Promise<string> {
   await RundotGameAPI.initializeAsync();
+  const session = makeSessionConfig(map);
   const transport = await createSyncplayRoom(RundotGameAPI.realtime, {
-    maxPlayers: sessionConfig.players,
+    maxPlayers: PLAYERS,
     runtimeIdentity,
-    sessionConfigBytes,
-    sessionConfigDigest,
+    sessionConfigBytes: session.bytes,
+    sessionConfigDigest: session.digest,
   });
   await runner.start({ mode: 'networked', connect: async () => transport });
   return transport.roomCode ?? '';
@@ -93,13 +88,14 @@ export async function joinRace(runner: FrankenRunner, code: string): Promise<voi
 }
 
 /** Public matchmaking: the platform pools compatible players (same build, same config) into an open room. */
-export async function quickMatch(runner: FrankenRunner): Promise<void> {
+export async function quickMatch(runner: FrankenRunner, map: string = DEFAULT_MAP): Promise<void> {
   await RundotGameAPI.initializeAsync();
+  const session = makeSessionConfig(map);
   const transport = await quickMatchSyncplayRoom(RundotGameAPI.realtime, {
-    maxPlayers: sessionConfig.players,
+    maxPlayers: PLAYERS,
     runtimeIdentity,
-    sessionConfigBytes,
-    sessionConfigDigest,
+    sessionConfigBytes: session.bytes,
+    sessionConfigDigest: session.digest,
   });
   await runner.start({ mode: 'networked', connect: async () => transport });
 }

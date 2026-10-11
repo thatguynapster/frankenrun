@@ -31,21 +31,14 @@ import {
   MASS_UNIT,
   RESET_FREEZE_TICKS,
   RESET_HOLD_TICKS,
+  OFF_ROAD_DRIVE_MUL,
   RIDE_HEIGHT,
   STEER_FADE_SPEED,
   STEER_MIN_SCALE,
   TICK_RATE,
   type LegsDef,
 } from './parts.js';
-import {
-  ARENA_HALF,
-  CHECKPOINTS,
-  OBSTACLES,
-  POLES,
-  START_DX,
-  START_X0,
-  START_Z,
-} from './track.js';
+import type { PreparedMap } from './world.js';
 
 export type Phase = 'BUILD' | 'COUNTDOWN' | 'RACING' | 'RESULTS';
 
@@ -92,7 +85,7 @@ export interface PlayerState {
   readonly slot: number;
   readonly build: Build;
   readonly ready: boolean;
-  /** Index of the next checkpoint to hit; equals CHECKPOINTS.length once finished. */
+  /** Index of the next checkpoint to hit; equals the checkpoint count once finished. */
   readonly nextCheckpoint: number;
   readonly finishTick: number; // -1 until finished
   readonly prevArms: boolean;
@@ -121,10 +114,14 @@ export interface GameState {
   readonly players: readonly PlayerState[];
   readonly slicks: readonly Slick[];
   readonly finishOrder: readonly number[];
+  /** Sorted collision cells whose building colliders are currently loaded in the physics world. */
+  readonly activeCells: readonly number[];
 }
 
 export interface SessionConfig {
   readonly game: string;
+  /** Id of the map this room races on (a baked route, or 'greybox'). */
+  readonly map: string;
   readonly players: number;
   readonly seed: number;
   readonly tickRateHz: number;
@@ -161,8 +158,8 @@ export interface GameProjection {
   readonly finishOrder: readonly number[];
 }
 
-const GROUND_LAYER = 1;
 const CAR_LAYER = 2;
+const ANCHOR_ATTACH_HEIGHT = 2.6;
 const ALL = 0xffffffff;
 
 const carId = (slot: number): string => `car-${slot}`;
@@ -182,65 +179,6 @@ function steerScale(vx: number, vz: number): number {
 
 function legsOf(build: Build): LegsDef {
   return build.legs ? LEGS.werewolf : LEGS.none;
-}
-
-function staticBodies(): DeterministicPhysicsBody3D[] {
-  const still = { vx: 0, vy: 0, vz: 0 } as const;
-  const wallHeight = 6;
-  const wall = (id: string, x: number, z: number, halfX: number, halfZ: number): DeterministicPhysicsBody3D => ({
-    id,
-    kind: 'static',
-    x,
-    y: wallHeight / 2,
-    z,
-    ...still,
-    shape: { type: 'box', halfX, halfY: wallHeight / 2, halfZ },
-    layer: GROUND_LAYER,
-    mask: ALL,
-    material: { friction: 0.4, restitution: 0.2 },
-  });
-  return [
-    {
-      id: 'ground',
-      kind: 'static',
-      x: 0,
-      y: -0.5,
-      z: 0,
-      ...still,
-      shape: { type: 'box', halfX: ARENA_HALF + 20, halfY: 0.5, halfZ: ARENA_HALF + 20 },
-      layer: GROUND_LAYER,
-      mask: ALL,
-      material: { friction: 24, restitution: 0 },
-    },
-    wall('wall-n', 0, ARENA_HALF + 1, ARENA_HALF + 2, 1),
-    wall('wall-s', 0, -ARENA_HALF - 1, ARENA_HALF + 2, 1),
-    wall('wall-e', ARENA_HALF + 1, 0, 1, ARENA_HALF),
-    wall('wall-w', -ARENA_HALF - 1, 0, 1, ARENA_HALF),
-    ...OBSTACLES.map((o) => ({
-      id: o.id,
-      kind: 'static' as const,
-      x: o.x,
-      y: o.height / 2,
-      z: o.z,
-      ...still,
-      shape: { type: 'box' as const, halfX: o.halfX, halfY: o.height / 2, halfZ: o.halfZ },
-      layer: GROUND_LAYER,
-      mask: ALL,
-      material: { friction: 0.4, restitution: 0.3 },
-    })),
-    ...POLES.map((p) => ({
-      id: p.id,
-      kind: 'static' as const,
-      x: p.x,
-      y: 1.5,
-      z: p.z,
-      ...still,
-      shape: { type: 'box' as const, halfX: 0.25, halfY: 1.5, halfZ: 0.25 },
-      layer: GROUND_LAYER,
-      mask: ALL,
-      material: { friction: 0.4, restitution: 0.2 },
-    })),
-  ];
 }
 
 function chassisBody(slot: number, build: Build, x: number, z: number, yaw: number): DeterministicPhysicsBody3D {
@@ -287,7 +225,7 @@ function wheel(x: number, z: number, steered: boolean, grip: number, massRatio: 
   };
 }
 
-function vehicleFor(slot: number, build: Build, gripMul: number): DeterministicVehicle3D {
+function vehicleFor(slot: number, build: Build, gripMul: number, driveMul: number): DeterministicVehicle3D {
   const body = BODIES[0]!;
   const legs = legsOf(build);
   const grip = legs.gripMul * gripMul * body.turn;
@@ -296,7 +234,7 @@ function vehicleFor(slot: number, build: Build, gripMul: number): DeterministicV
   const wz = CHASSIS_HALF.z - 0.2;
   return {
     chassisId: carId(slot),
-    driveForce: MASS_UNIT * massRatio * BASE_ACCEL * body.accel * legs.driveMul,
+    driveForce: MASS_UNIT * massRatio * BASE_ACCEL * body.accel * legs.driveMul * driveMul,
     brakeForce: MASS_UNIT * massRatio * 0.02,
     wheels: [
       wheel(-wx, wz, true, grip, massRatio),
@@ -305,10 +243,6 @@ function vehicleFor(slot: number, build: Build, gripMul: number): DeterministicV
       wheel(wx, -wz, false, grip, massRatio),
     ],
   };
-}
-
-function startPose(slot: number): { x: number; z: number } {
-  return { x: START_X0 + slot * START_DX, z: START_Z };
 }
 
 function newPlayer(slot: number): PlayerState {
@@ -330,17 +264,18 @@ function newPlayer(slot: number): PlayerState {
   };
 }
 
-export function createGameState(config: SessionConfig): GameState {
+export function createGameState(config: SessionConfig, prep: PreparedMap): GameState {
   const players: PlayerState[] = [];
   for (let slot = 0; slot < config.players; slot += 1) players.push(newPlayer(slot));
   return {
     frame: 0,
     phase: 'BUILD',
     phaseStart: 0,
-    physics: createDeterministicPhysicsWorld3D(staticBodies()),
+    physics: createDeterministicPhysicsWorld3D(prep.staticBodies),
     players,
     slicks: [],
     finishOrder: [],
+    activeCells: [],
   };
 }
 
@@ -361,11 +296,11 @@ function slickGripMul(slicks: readonly Slick[], x: number, z: number): number {
   return 1;
 }
 
-function nearestPole(x: number, z: number, range: number): { index: number; distance: number } | null {
+function nearestAnchor(prep: PreparedMap, x: number, z: number, range: number): { index: number; distance: number } | null {
   let best: { index: number; distance: number } | null = null;
-  for (let i = 0; i < POLES.length; i += 1) {
-    const p = POLES[i]!;
-    const d = Math.hypot(p.x - x, p.z - z);
+  for (let i = 0; i < prep.anchors.length; i += 1) {
+    const a = prep.anchors[i]!;
+    const d = Math.hypot(a.x - x, a.z - z);
     if (d <= range && (best === null || d < best.distance)) best = { index: i, distance: d };
   }
   return best;
@@ -375,7 +310,41 @@ function yawToward(fromX: number, fromZ: number, toX: number, toZ: number): numb
   return Math.atan2(toX - fromX, toZ - fromZ);
 }
 
-export function stepGame(state: GameState, rawInputs: readonly GameInput[]): GameState {
+/**
+ * Keeps only the building colliders near the cars in the physics world (each car's cell and the 8 around
+ * it). The wanted set depends only on car positions, so every client computes the same set; bodies are
+ * added or dropped only for the cells that change when a car crosses into a new cell. This is what keeps the 30 Hz tick affordable on a dense city.
+ */
+function syncBuildings(
+  world: DeterministicPhysicsWorld3D,
+  prep: PreparedMap,
+  players: readonly PlayerState[],
+  active: readonly number[],
+): { world: DeterministicPhysicsWorld3D; activeCells: readonly number[] } {
+  const wanted = new Set<number>();
+  for (const p of players) {
+    const body = deterministicPhysicsBodyById3D(world, carId(p.slot));
+    if (body === undefined) continue;
+    const key = prep.cellOf(body.x, body.z);
+    const cx = Math.floor(key / 4096), cz = key % 4096;
+    for (let dx = -1; dx <= 1; dx += 1) for (let dz = -1; dz <= 1; dz += 1) wanted.add((cx + dx) * 4096 + (cz + dz));
+  }
+  const next = [...wanted].sort((a, b) => a - b);
+  if (next.length === active.length && next.every((k, i) => k === active[i])) return { world, activeCells: active };
+  // One static body per cell, so a crossing only builds the few cells that came into range and drops the rest.
+  const had = new Set(active), want = new Set(next);
+  const add: DeterministicPhysicsBody3D[] = [];
+  for (const key of next) {
+    if (had.has(key)) continue;
+    const body = prep.cellBody(key);
+    if (body !== undefined) add.push(body);
+  }
+  const remove = active.filter((key) => !want.has(key) && deterministicPhysicsBodyById3D(world, `bld-${key}`) !== undefined).map((key) => `bld-${key}`);
+  const edited = add.length > 0 || remove.length > 0 ? applyDeterministicWorldEdit3D(world, { add, remove }) : world;
+  return { world: edited, activeCells: next };
+}
+
+export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
   const frame = state.frame + 1;
   const inputs = state.players.map((p) => normaliseInput(rawInputs[p.slot]));
   let world = state.physics;
@@ -384,6 +353,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
   let phase = state.phase;
   let phaseStart = state.phaseStart;
   let finishOrder = state.finishOrder;
+  let activeCells = state.activeCells;
 
   if (phase === 'BUILD') {
     players = players.map((p, i) => {
@@ -393,8 +363,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
     if (players.length > 0 && players.every((p) => p.ready)) {
       world = applyDeterministicWorldEdit3D(world, {
         add: players.map((p) => {
-          const pose = startPose(p.slot);
-          return chassisBody(p.slot, p.build, pose.x, pose.z, 0);
+          const pose = prep.startPose(p.slot);
+          return chassisBody(p.slot, p.build, pose.x, pose.z, prep.startYaw);
         }),
       });
       phase = 'COUNTDOWN';
@@ -434,7 +404,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
 
       if (racing && !frozen) {
         if (p.build.arms && swing === null && armsEdge && armsCooldown === 0) {
-          const hit = nearestPole(body.x, body.z, ARMS.tentacles.grabRange);
+          const hit = nearestAnchor(prep, body.x, body.z, ARMS.tentacles.grabRange);
           if (hit !== null) {
             swing = { pole: hit.index, maxLength: Math.max(hit.distance, 2), ticksLeft: ARMS.tentacles.swingTicks };
           } else {
@@ -469,14 +439,14 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
       }
 
       if (swing !== null) {
-        const pole = POLES[swing.pole]!;
+        const anchor = prep.anchors[swing.pole]!;
         joints.push({
           id: ropeId(p.slot),
           type: 'distance',
           a: carId(p.slot),
-          b: pole.id,
+          b: 'anchors', // one static compound body; its origin is the world origin, so local = world
           anchorA: { x: 0, y: 0, z: 0 },
-          anchorB: { x: 0, y: 0, z: 0 },
+          anchorB: { x: anchor.x, y: ANCHOR_ATTACH_HEIGHT, z: anchor.z },
           maxLength: swing.maxLength,
         });
       }
@@ -488,8 +458,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
         resetHold += 1;
         if (resetHold >= RESET_HOLD_TICKS) {
           resetHold = 0;
-          const last = p.nextCheckpoint > 0 ? CHECKPOINTS[p.nextCheckpoint - 1]! : startPose(p.slot);
-          const target = CHECKPOINTS[Math.min(p.nextCheckpoint, CHECKPOINTS.length - 1)]!;
+          const last = p.nextCheckpoint > 0 ? prep.checkpoints[p.nextCheckpoint - 1]! : prep.startPose(p.slot);
+          const target = prep.checkpoints[Math.min(p.nextCheckpoint, prep.checkpoints.length - 1)]!;
           respawns.push(chassisBody(p.slot, p.build, last.x, last.z, yawToward(last.x, last.z, target.x, target.z)));
           frozenUntil = frame + RESET_FREEZE_TICKS;
           if (swing !== null) {
@@ -504,7 +474,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
       // --- vehicle controls ---
       const live = racing && frame >= frozenUntil;
       const gripMul = slickGripMul(state.slicks, body.x, body.z);
-      const vehicle = vehicleFor(p.slot, p.build, gripMul);
+      const vehicle = vehicleFor(p.slot, p.build, gripMul, prep.onRoad(body.x, body.z) ? 1 : OFF_ROAD_DRIVE_MUL);
       const result = stepDeterministicVehicle3D(vehicle, {
         throttle: live ? clampInt(input.throttle / 10, -10, 10) : 0,
         steer: live ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
@@ -540,7 +510,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
     slicks = [...state.slicks.filter((s) => s.expires > frame), ...newSlicks];
   }
 
-  world = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints }).world;
+  if (driving) ({ world, activeCells } = syncBuildings(world, prep, players, activeCells));
+  world = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints, computeChecksum: false }).world;
 
   if (racing) {
     const finishedNow: number[] = [];
@@ -548,11 +519,11 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
       if (p.finishTick >= 0) return p;
       const body = deterministicPhysicsBodyById3D(world, carId(p.slot));
       if (body === undefined) return p;
-      const cp = CHECKPOINTS[p.nextCheckpoint];
+      const cp = prep.checkpoints[p.nextCheckpoint];
       if (cp === undefined) return p;
       if (Math.hypot(body.x - cp.x, body.z - cp.z) > CHECKPOINT_RADIUS) return p;
       const next = p.nextCheckpoint + 1;
-      if (next >= CHECKPOINTS.length) {
+      if (next >= prep.checkpoints.length) {
         finishedNow.push(p.slot);
         return { ...p, nextCheckpoint: next, finishTick: frame };
       }
@@ -567,10 +538,10 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, finishOrder };
+  return { frame, phase, phaseStart, physics: world, players, slicks, finishOrder, activeCells };
 }
 
-export function projectGame(state: GameState): GameProjection {
+export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
   const players: PlayerView[] = state.players.map((p) => {
     const body = deterministicPhysicsBodyById3D(state.physics, carId(p.slot));
     const present = body !== undefined;
@@ -585,7 +556,7 @@ export function projectGame(state: GameState): GameProjection {
           qw: body.orientation?.w ?? 1,
           speed: Math.hypot(body.vx, body.vz) * 30,
         }
-      : { ...startPose(p.slot), y: RIDE_HEIGHT, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0 };
+      : { ...prep.startPose(p.slot), y: RIDE_HEIGHT, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0 };
     return {
       slot: p.slot,
       build: p.build,

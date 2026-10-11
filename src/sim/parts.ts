@@ -89,6 +89,9 @@ export const RESET_FREEZE_TICKS = 60;
 export const STEER_FADE_SPEED = 24;
 export const STEER_MIN_SCALE = 0.2;
 
+// Off-road (no road surface under the monster) halves drive force, which halves top speed.
+export const OFF_ROAD_DRIVE_MUL = 0.5;
+
 // Chassis geometry (metres)
 export const CHASSIS_HALF = { x: 0.7, y: 0.35, z: 1.2 } as const;
 export const RIDE_HEIGHT = 1.0;

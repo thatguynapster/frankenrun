@@ -1,7 +1,7 @@
 // Renders candidate routes over the road network to an SVG for eyeballing:  PREVIEW=1 node scripts/run-ts.mjs bake/preview-route.ts
 import { writeFileSync } from 'node:fs';
 import { project } from './lib/geo.ts';
-import { loadGraph, nearestNode, route, scoreRoute, fmt } from './score-routes.ts';
+import { fmt, loadGraph, nearestNode, route, scoreRoute } from './lib/roadgraph.ts';
 
 const ROUTES = [
   { id: '1', label: 'Route 1 (windiest, Osu-Labone area)', file: 'bake/cache/roads-ring.json', a: [5.5525, -0.1796], b: [5.5653, -0.1748], color: '#e63946' },

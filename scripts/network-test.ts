@@ -3,7 +3,11 @@
 import { assertLateJoinHydration, assertTwoClientConvergence } from '@series-inc/rundot-syncplay/testing';
 import { encodeInput, decodeInput } from '../src/sim/input-codec.ts';
 import { DEFAULT_INPUT, type GameInput } from '../src/sim/game.ts';
-import { createGameRuntime, runtimeIdentity, sessionConfigBytes, sessionConfigDigest } from '../src/sim/runtime.ts';
+import { createGameRuntime, makeSessionConfig, runtimeIdentity } from '../src/sim/runtime.ts';
+import { loadBakedMaps } from './lib/load-maps.ts';
+
+loadBakedMaps();
+const session = makeSessionConfig(process.env['MAP'] ?? 'route1');
 
 const driver = (slot: number, tick: number): GameInput => ({
   ...DEFAULT_INPUT,
@@ -23,13 +27,13 @@ const roomConfig = {
   tickRateHz: 30,
   redundancyWindowTicks: 8,
   runtimeIdentity,
-  sessionConfigBytes,
-  sessionConfigDigest,
+  sessionConfigBytes: session.bytes,
+  sessionConfigDigest: session.digest,
   neutralInput: encodeInput(DEFAULT_INPUT),
   snapshotCadenceTicks: 60,
 };
 const clientOptions = () => ({
-  runtimeFactory: () => createGameRuntime(),
+  runtimeFactory: () => createGameRuntime(undefined, session.bytes),
   defaultInput: DEFAULT_INPUT,
   localInputForTick: driver,
   encodeInput,
