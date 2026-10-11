@@ -32,6 +32,9 @@ import {
   RESET_FREEZE_TICKS,
   RESET_HOLD_TICKS,
   RIDE_HEIGHT,
+  STEER_FADE_SPEED,
+  STEER_MIN_SCALE,
+  TICK_RATE,
   type LegsDef,
 } from './parts.js';
 import {
@@ -170,6 +173,13 @@ const clampInt = (value: number, lo: number, hi: number): number => {
   return v < lo ? lo : v > hi ? hi : v;
 };
 
+/** Steering lock narrows with speed (per-tick velocity in, 0..1 out) so fast corners don't scrub speed. */
+function steerScale(vx: number, vz: number): number {
+  const speedMs = Math.hypot(vx, vz) * TICK_RATE;
+  const scale = 1 - speedMs / STEER_FADE_SPEED;
+  return scale < STEER_MIN_SCALE ? STEER_MIN_SCALE : scale;
+}
+
 function legsOf(build: Build): LegsDef {
   return build.legs ? LEGS.werewolf : LEGS.none;
 }
@@ -200,7 +210,7 @@ function staticBodies(): DeterministicPhysicsBody3D[] {
       shape: { type: 'box', halfX: ARENA_HALF + 20, halfY: 0.5, halfZ: ARENA_HALF + 20 },
       layer: GROUND_LAYER,
       mask: ALL,
-      material: { friction: 8, restitution: 0 },
+      material: { friction: 24, restitution: 0 },
     },
     wall('wall-n', 0, ARENA_HALF + 1, ARENA_HALF + 2, 1),
     wall('wall-s', 0, -ARENA_HALF - 1, ARENA_HALF + 2, 1),
@@ -497,7 +507,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[]): Gam
       const vehicle = vehicleFor(p.slot, p.build, gripMul);
       const result = stepDeterministicVehicle3D(vehicle, {
         throttle: live ? clampInt(input.throttle / 10, -10, 10) : 0,
-        steer: live ? clampInt(input.steer / 10, -10, 10) : 0,
+        steer: live ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
         brake: live ? 0 : 10,
       }, world);
       for (const imp of result.impulses) {

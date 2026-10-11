@@ -3,6 +3,7 @@ import {
   createSyncplayRoom,
   createSyncplayRunner,
   joinSyncplayRoomByCode,
+  quickMatchSyncplayRoom,
   type SyncplayRunner,
 } from '@series-inc/rundot-syncplay/browser';
 import { DEFAULT_INPUT, type GameInput, type GameProjection, type PlayerView } from '../sim/game.js';
@@ -89,4 +90,16 @@ export async function joinRace(runner: FrankenRunner, code: string): Promise<voi
     mode: 'networked',
     connect: async () => joinSyncplayRoomByCode(RundotGameAPI.realtime, code),
   });
+}
+
+/** Public matchmaking: the platform pools compatible players (same build, same config) into an open room. */
+export async function quickMatch(runner: FrankenRunner): Promise<void> {
+  await RundotGameAPI.initializeAsync();
+  const transport = await quickMatchSyncplayRoom(RundotGameAPI.realtime, {
+    maxPlayers: sessionConfig.players,
+    runtimeIdentity,
+    sessionConfigBytes,
+    sessionConfigDigest,
+  });
+  await runner.start({ mode: 'networked', connect: async () => transport });
 }

@@ -51,11 +51,14 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       <div className="panel center">
         <h1 className="title">FRANKENRUN</h1>
         <p className="muted">Stitch a monster. Race it. Steal the win.</p>
-        <button className="btn primary" onClick={() => void game.practice()}>
+        <button className="btn primary" onClick={() => void game.quick()}>
+          Quick match
+        </button>
+        <button className="btn" onClick={() => void game.practice()}>
           Practice (offline)
         </button>
         <button className="btn" onClick={() => void game.host()}>
-          Host race
+          Host private race
         </button>
         <div className="row">
           <input
@@ -69,6 +72,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
             Join
           </button>
         </div>
+        <p className="credit">Map data © OpenStreetMap contributors (ODbL)</p>
       </div>
     );
   }

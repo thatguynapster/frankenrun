@@ -7,5 +7,5 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "eb2dc4b85802992139c196207c56385301f1b31a49c71244121365c61dbf2cb3"
+  "engineIdentityHash": "bf9d17a8a8f5c0403adb6899d2cc823313ecb7ec4e2f8d6137e71225f4f013f3"
 };

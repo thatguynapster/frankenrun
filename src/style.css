@@ -314,3 +314,12 @@ body {
   font-size: 20px;
   line-height: 1.8;
 }
+
+.credit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(10px + var(--safe-bottom));
+  font-size: 11px;
+  color: var(--color-text-muted);
+}

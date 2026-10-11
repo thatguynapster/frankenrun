@@ -10,6 +10,7 @@ export class Controls {
   private touchLegs = false;
   private touchReset = false;
   private touchActive = false;
+  private steerSmoothed = 0; // keyboard steering eases in so a tap doesn't snap to full lock
 
   constructor(target: Window = window) {
     target.addEventListener('keydown', (e) => {
@@ -52,7 +53,15 @@ export class Controls {
 
   read(base: GameInput): GameInput {
     const right = (this.down('KeyD', 'ArrowRight') ? 1 : 0) - (this.down('KeyA', 'ArrowLeft') ? 1 : 0);
-    const screenSteer = right !== 0 ? right : this.touchSteer;
+    if (this.touchSteer !== 0) {
+      this.steerSmoothed = this.touchSteer; // touch drag is already analogue
+    } else {
+      // Keyboard: ease toward the key's direction slowly, and back to centre faster.
+      const rate = right === 0 ? 0.35 : 0.14;
+      const delta = right - this.steerSmoothed;
+      this.steerSmoothed += Math.max(-rate, Math.min(rate, delta));
+    }
+    const screenSteer = this.steerSmoothed;
     const forward = this.down('KeyW', 'ArrowUp');
     const back = this.down('KeyS', 'ArrowDown') || this.touchBrake;
     // Touch has auto-throttle on; keyboard needs W.

@@ -27,6 +27,7 @@
   "author": "",
   "license": "SEE LICENSE IN LICENSE.txt",
   "devDependencies": {
+    "@revenuecat/purchases-js": "^1.70.0",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@types/three": "~0.170.0",

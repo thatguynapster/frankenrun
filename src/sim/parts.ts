@@ -85,6 +85,10 @@ export const CHECKPOINT_RADIUS = 12;
 export const RESET_HOLD_TICKS = 30;
 export const RESET_FREEZE_TICKS = 60;
 
+// Steering lock fades linearly with speed: full lock at rest, STEER_MIN_SCALE at/above STEER_FADE_SPEED (m/s).
+export const STEER_FADE_SPEED = 24;
+export const STEER_MIN_SCALE = 0.2;
+
 // Chassis geometry (metres)
 export const CHASSIS_HALF = { x: 0.7, y: 0.35, z: 1.2 } as const;
 export const RIDE_HEIGHT = 1.0;

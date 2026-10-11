@@ -1,6 +1,6 @@
 import type { SyncplayRunnerSnapshot } from '@series-inc/rundot-syncplay/browser';
 import { Controls } from './input/Controls.js';
-import { createRunner, hostRace, joinRace, startPractice, type FrankenRunner } from './net/runner.js';
+import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
 import { DEFAULT_INPUT, type Build, type GameProjection } from './sim/game.js';
 
@@ -24,6 +24,13 @@ export interface UiState {
 
 type Listener = (state: UiState) => void;
 
+/** Turns transport/matchmaking errors into something a player can act on. */
+function friendlyError(message: string): string {
+  if (/duplicate session/i.test(message)) return 'You are still seated in a previous room. Wait a few seconds and try again.';
+  if (/rate limit/i.test(message)) return 'The server is busy. Please try again in a moment.';
+  return message || 'Connection problem';
+}
+
 /** Owns the runner, renderer and input. React only subscribes to UiState and calls the methods below. */
 export class Game {
   readonly controls = new Controls();
@@ -46,7 +53,7 @@ export class Game {
       this.snapshot = snap;
       if (snap.status === 'error') {
         this.screen = 'error';
-        this.error = snap.error?.message ?? 'Connection problem';
+        this.error = friendlyError(snap.error?.message ?? '');
       }
     });
     this.raf = requestAnimationFrame(this.frame);
@@ -110,13 +117,16 @@ export class Game {
       this.screen = 'play';
     } catch (e) {
       this.screen = 'error';
-      this.error = e instanceof Error ? e.message : String(e);
+      this.error = friendlyError(e instanceof Error ? e.message : String(e));
     }
     this.emit();
   }
 
   practice(): Promise<void> {
     return this.enter(() => startPractice(this.runner));
+  }
+  quick(): Promise<void> {
+    return this.enter(() => quickMatch(this.runner));
   }
   host(): Promise<void> {
     return this.enter(async () => {
