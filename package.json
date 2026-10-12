@@ -17,8 +17,10 @@
     "test:determinism": "node scripts/run-ts.mjs scripts/determinism-test.ts",
     "test:network": "node scripts/run-ts.mjs scripts/network-test.ts",
     "test:perf": "node scripts/run-ts.mjs scripts/perf-test.ts",
-    "bake:route1": "node scripts/run-ts.mjs bake/bake-map.ts route1 && npm run gen:identity",
-    "test:route": "node scripts/run-ts.mjs scripts/route-probe.ts"
+    "bake:route1": "node scripts/run-ts.mjs bake/bake-map.ts route1 && npm run gen:identity && npm run test:colliders",
+    "test:route": "node scripts/run-ts.mjs scripts/route-probe.ts",
+    "test:colliders": "node scripts/run-ts.mjs scripts/collider-audit.ts",
+    "test:outage": "node scripts/run-ts.mjs scripts/outage-test.ts"
   },
   "keywords": [
     "react",

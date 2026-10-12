@@ -7,14 +7,14 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "e3d9dd76cba86f129e1d892ce69423f5ecf71545aa244df109b68cb291971295"
+  "engineIdentityHash": "1433fe0d6966a4e457785969c0fcea03b89e751fc11eb80baf451258c61706bb"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */
 export const mapAssets: readonly { name: string; digest: string; byteLength: number }[] = [
   {
     "name": "map-route1",
-    "digest": "aa0dbd058b0a47f3812fa0c592d3869e27c3b061cdf59e502940f426130ff958",
-    "byteLength": 311509
+    "digest": "762abcb9cd0d9a54b145ec9ac826376507bb878017b62fb335a4d784645a8ec1",
+    "byteLength": 537401
   }
 ];

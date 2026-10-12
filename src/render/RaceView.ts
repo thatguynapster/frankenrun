@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GameProjection, PlayerView } from '../sim/game.js';
 import type { MapData } from '../sim/mapdata.js';
+import { getPreparedMap, type PreparedMap } from '../sim/world.js';
 import { CHASSIS_HALF, CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
 
 const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf];
@@ -26,6 +27,9 @@ export class RaceView {
   private rings: THREE.Mesh[] = [];
   private worldGroup: THREE.Group | undefined;
   private anchors: { x: number; z: number }[] = [];
+  private prep: PreparedMap | undefined;
+  private colliderLines: THREE.LineSegments | undefined;
+  private colliderSignature = '';
   private slickPool: THREE.Mesh[] = [];
   private slickGeo = new THREE.CircleGeometry(HEADS.slime.slickRadius, 20);
   private slickMat = new THREE.MeshBasicMaterial({ color: 0x4dff6a, transparent: true, opacity: 0.45 });
@@ -71,6 +75,8 @@ export class RaceView {
     this.worldGroup = group;
     this.rings = [];
     this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
+    this.prep = getPreparedMap(map.id);
+    this.clearColliderLines();
 
     const { minX, maxX, minZ, maxZ } = map.bounds;
     const cx = (minX + maxX) / 20, cz = (minZ + maxZ) / 20, w = (maxX - minX) / 10 + 60, h = (maxZ - minZ) / 10 + 60;
@@ -321,7 +327,54 @@ export class RaceView {
     this.camera.lookAt(this.camLook);
   }
 
-  render(frame: GameProjection | undefined, localSlot: number, dtSeconds: number): void {
+  private clearColliderLines(): void {
+    if (this.colliderLines) {
+      this.scene.remove(this.colliderLines);
+      this.colliderLines.geometry.dispose();
+      this.colliderLines = undefined;
+    }
+    this.colliderSignature = '';
+  }
+
+  /**
+   * Draws the colliders that are currently loaded in the physics world (the cells around each car) as red
+   * wireframes. It rebuilds only when the set of loaded cells changes, which is the same moment the sim loads
+   * or drops colliders, so it shows exactly what the cars can hit.
+   */
+  private updateColliderLines(frame: GameProjection | undefined, show: boolean): void {
+    if (!show || !frame || !this.prep) {
+      if (this.colliderLines) this.clearColliderLines();
+      return;
+    }
+    const signature = frame.activeCells.join(',');
+    if (signature === this.colliderSignature && this.colliderLines) return;
+    this.clearColliderLines();
+    this.colliderSignature = signature;
+    const positions: number[] = [];
+    const drawn = new Set<string>();
+    for (const cell of frame.activeCells) {
+      for (const { footprint, heightM } of this.prep.cellHulls(cell)) {
+        const key = `${footprint[0]},${footprint[1]},${footprint.length}`;
+        if (drawn.has(key)) continue;
+        drawn.add(key);
+        const n = footprint.length / 2;
+        for (let i = 0; i < n; i += 1) {
+          const j = (i + 1) % n;
+          const x0 = footprint[i * 2]! / 10, z0 = footprint[i * 2 + 1]! / 10, x1 = footprint[j * 2]! / 10, z1 = footprint[j * 2 + 1]! / 10;
+          positions.push(x0, 0.15, z0, x1, 0.15, z1, x0, heightM, z0, x1, heightM, z1, x0, 0.15, z0, x0, heightM, z0);
+        }
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    this.colliderLines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0xff3b3b, depthTest: false }));
+    this.colliderLines.renderOrder = 10;
+    this.colliderLines.frustumCulled = false;
+    this.scene.add(this.colliderLines);
+  }
+
+  render(frame: GameProjection | undefined, localSlot: number, dtSeconds: number, showColliders = false): void {
+    this.updateColliderLines(frame, showColliders);
     if (frame !== undefined) {
       while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
       frame.players.forEach((p, i) => {

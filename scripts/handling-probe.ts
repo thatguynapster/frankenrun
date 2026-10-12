@@ -29,9 +29,9 @@ function run(label: string, legs: boolean, steer: number, seconds: number, steer
   console.log(label.padEnd(26), samples.join(' '), `| end x=${p.x.toFixed(0)} z=${p.z.toFixed(0)} yaw=${((yaw * 180) / Math.PI).toFixed(0)}deg`);
 }
 
-run('legs, straight', true, 0, 12);
-run('no legs, straight', false, 0, 12);
+
+
 run('legs, full steer 5s', true, 100, 5);
-run('no legs, full steer 5s', false, 100, 5);
+
 run('legs, 3s straight+3s turn', true, 100, 6, 3);
 run('nolegs, 3s straight+3s turn', false, 100, 6, 3);

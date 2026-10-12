@@ -14,8 +14,11 @@ export interface BuildingData {
   readonly h: number;
   /** Flat footprint [x, z, ...] decimetres (render). */
   readonly pts: readonly number[];
-  /** Convex hull (<= 8 vertices) flat [x, z, ...] decimetres when this building collides, else absent. */
-  readonly hull?: readonly number[];
+  /**
+   * Convex collider pieces (each <= 8 vertices, flat [x, z, ...] decimetres). A building is normally one
+   * piece; a building that overlaps a road is cut back from the lane into several. Absent when it has none.
+   */
+  readonly hulls?: readonly (readonly number[])[];
 }
 
 export interface WallData {

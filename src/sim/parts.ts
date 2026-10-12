@@ -47,7 +47,7 @@ export interface HeadDef {
   readonly cooldownTicks: number;
 }
 
-export const BODIES: readonly BodyDef[] = [{ name: 'Stitched Brute', mass: 1.4, accel: 0.8, turn: 0.8 }];
+export const BODIES: readonly BodyDef[] = [{ name: 'Stitched Brute', mass: 1.4, accel: 0.8, turn: 1.8 }];
 
 export const LEGS: Readonly<Record<'none' | 'werewolf', LegsDef>> = {
   none: { name: 'Stumps', driveMul: 1, topSpeedMul: 1, gripMul: 1 },
@@ -95,3 +95,10 @@ export const OFF_ROAD_DRIVE_MUL = 0.5;
 // Chassis geometry (metres)
 export const CHASSIS_HALF = { x: 0.7, y: 0.35, z: 1.2 } as const;
 export const RIDE_HEIGHT = 1.0;
+
+// A monster cannot reverse. Instead, near a standstill it can pivot on the spot (so it can turn around when stuck
+// against a wall): below PIVOT_SPEED (m/s) steering adds a yaw torque, fading out to zero at that speed.
+export const PIVOT_SPEED = 1.2;
+export const PIVOT_TORQUE = 0.05;
+export const PIVOT_MIN_STEER = 60;
+export const CORNER_DRIVE_BOOST = 0;

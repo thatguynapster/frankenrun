@@ -59,9 +59,16 @@ function pilot(slot: number): GameInput {
   const cap = Number(process.env['SPEEDCAP'] ?? 999);
   let throttle = Math.abs(err) > 0.7 ? 35 : speedKmh > Math.min(cap, wanted) + 10 ? -60 : speedKmh > Math.min(cap, wanted) ? 0 : 100;
   // Recover when wedged: reverse out with opposite lock for ~1.5 s.
-  if (v.speed < 0.4 && state.phase === 'RACING') wedged[slot] = (wedged[slot] ?? 0) + 1; else if (v.speed > 2) wedged[slot] = 0;
-  if ((wedged[slot] ?? 0) > 20) { throttle = -100; if ((wedged[slot] ?? 0) > 70) wedged[slot] = 0; return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle, steer: -Math.max(-100, Math.min(100, Math.round(err * 160))) }; }
-  if (process.env['TRACE'] && slot === 0 && state.frame % 45 === 0 && state.frame >= 1100 && state.frame < 1700) console.log(`t${state.frame} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} yaw ${((yaw * 180) / Math.PI).toFixed(0)} tgt ${target.x.toFixed(0)},${target.z.toFixed(0)} err ${((err * 180) / Math.PI).toFixed(0)} steer ${steer} thr ${throttle} spd ${(v.speed * 3.6).toFixed(0)} prog ${best} onRoad ${prep.onRoad(v.x, v.z)} cp ${state.players[slot]!.nextCheckpoint} cpPos ${JSON.stringify(prep.checkpoints[state.players[slot]!.nextCheckpoint] ?? null)}`);
+  if (v.speed < 0.4 && state.phase === 'RACING' && (wedged[slot] ?? 0) >= 0) wedged[slot] = (wedged[slot] ?? 0) + 1; else if (v.speed > 2 && (wedged[slot] ?? 0) >= 0) wedged[slot] = 0;
+  // Monsters cannot reverse: when wedged, stop and pivot to face the nearest road point, drive there for ~1.5 s, then resume.
+  if ((wedged[slot] ?? 0) < 0) { wedged[slot] = (wedged[slot] ?? 0) + 1; return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 100, steer }; }
+  if ((wedged[slot] ?? 0) > 20) {
+    const road = polyline[best]!;
+    const err2 = Math.atan2(fz * (road.x - v.x) - fx * (road.z - v.z), fx * (road.x - v.x) + fz * (road.z - v.z));
+    if (Math.abs(err2) < 0.3 || (wedged[slot] ?? 0) > 150) { wedged[slot] = -45; return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 100, steer: Math.max(-100, Math.min(100, Math.round(err2 * 160))) }; }
+    return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 0, steer: err2 >= 0 ? 100 : -100 };
+  }
+  if (process.env['TRACE'] && slot === 0 && state.frame % 30 === 0 && state.frame >= 1100 && state.frame < 1700) console.log(`t${state.frame} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} yaw ${((yaw * 180) / Math.PI).toFixed(0)} tgt ${target.x.toFixed(0)},${target.z.toFixed(0)} err ${((err * 180) / Math.PI).toFixed(0)} steer ${steer} thr ${throttle} spd ${(v.speed * 3.6).toFixed(0)} prog ${best} onRoad ${prep.onRoad(v.x, v.z)} cp ${state.players[slot]!.nextCheckpoint} cpPos ${JSON.stringify(prep.checkpoints[state.players[slot]!.nextCheckpoint] ?? null)}`);
   return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle, steer };
 }
 
@@ -72,7 +79,7 @@ const slow: { f: number; ms: number }[] = [];
 const trace = process.env['MEM'] === '1';
 let denseMs = 0, denseN = 0;
 let winMs = 0, winN = 0;
-const frames = 30 * Number(process.env['SECS'] ?? 160);
+const frames = 30 * Number(process.env['SECS'] ?? 300);
 for (let f = 0; f < frames; f += 1) {
   const t0 = performance.now();
   state = stepGame(state, [pilot(0), state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true } : DEFAULT_INPUT], prep);

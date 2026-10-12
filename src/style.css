@@ -366,3 +366,7 @@ body {
   line-height: 1.35;
   max-width: 62vw;
 }
+
+.gfx2 {
+  top: calc(48px + var(--safe-top));
+}

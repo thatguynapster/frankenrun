@@ -152,7 +152,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             Leave
           </button>
         </div>
-        <p className="muted small">Keys: W/S throttle · A/D steer · J tentacles · K slime · hold R to reset</p>
+        <p className="muted small">Keys: W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset</p>
       </div>
     );
   }
@@ -216,14 +216,18 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         <button className="gfx" onClick={() => game.cycleGraphics()}>
           Graphics: {ui.graphics}
         </button>
+        <button className="gfx gfx2" onClick={() => game.toggleColliders()}>
+          Colliders: {ui.showColliders ? 'on' : 'off'}
+        </button>
         <div className="net">
           <div>{ui.diag}</div>
-          {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection} · rollbacks ${ui.rollbackCount}`}</div>}
+          {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection}`}</div>}
         </div>
       </div>
-      {frame.phase === 'RESULTS' && (
+      {(frame.phase === 'RESULTS' || me.finishTick >= 0) && (
         <div className="panel center results">
-          <h2 className="title small">Results</h2>
+          <h2 className="title small">{frame.phase === 'RESULTS' ? 'Results' : 'Race complete!'}</h2>
+          {frame.phase !== 'RESULTS' && <p className="muted small">Your time: {((me.finishTick - 90) / TICK).toFixed(1)}s. Waiting for the others to finish...</p>}
           <ol>
             {frame.finishOrder.map((slot, i) => {
               const t = frame.players[slot]?.finishTick ?? 0;
@@ -238,7 +242,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
               .filter((p) => p.finishTick < 0)
               .map((p) => (
                 <li key={`dnf-${p.slot}`} className="muted">
-                  Player {p.slot + 1} - DNF
+                  Player {p.slot + 1} - {frame.phase === 'RESULTS' ? 'DNF' : 'racing...'}
                 </li>
               ))}
           </ol>

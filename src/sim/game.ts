@@ -34,6 +34,10 @@ import {
   OFF_ROAD_DRIVE_MUL,
   RIDE_HEIGHT,
   STEER_FADE_SPEED,
+  PIVOT_SPEED,
+  CORNER_DRIVE_BOOST,
+  PIVOT_MIN_STEER,
+  PIVOT_TORQUE,
   STEER_MIN_SCALE,
   TICK_RATE,
   type LegsDef,
@@ -156,6 +160,8 @@ export interface GameProjection {
   readonly players: readonly PlayerView[];
   readonly slicks: readonly Slick[];
   readonly finishOrder: readonly number[];
+  /** Collision cells whose colliders are currently loaded (for the collider debug view). */
+  readonly activeCells: readonly number[];
 }
 
 const CAR_LAYER = 2;
@@ -164,6 +170,8 @@ const ALL = 0xffffffff;
 
 const carId = (slot: number): string => `car-${slot}`;
 const ropeId = (slot: number): string => `rope-${slot}`;
+
+const PIVOT_SPEED_SIGN = -1;
 
 const clampInt = (value: number, lo: number, hi: number): number => {
   const v = Math.round(value);
@@ -219,7 +227,7 @@ function wheel(x: number, z: number, steered: boolean, grip: number, massRatio: 
     stiffness: 55 * massRatio,
     damping: 160 * massRatio,
     grip,
-    maxSteerAngleTurns: 0.1,
+    maxSteerAngleTurns: 0.075,
     isSteered: steered,
     isDriven: true,
   };
@@ -472,16 +480,27 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       }
 
       // --- vehicle controls ---
-      const live = racing && frame >= frozenUntil;
+      const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
       const gripMul = slickGripMul(state.slicks, body.x, body.z);
-      const vehicle = vehicleFor(p.slot, p.build, gripMul, prep.onRoad(body.x, body.z) ? 1 : OFF_ROAD_DRIVE_MUL);
+      // Cornering scrubs speed, so steering adds drive to compensate (turning should not feel like braking).
+      const cornerBoost = 1 + CORNER_DRIVE_BOOST * (Math.abs(input.steer) / 100);
+      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : OFF_ROAD_DRIVE_MUL) * cornerBoost);
+      // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
+      // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
+      const speedMs = Math.hypot(body.vx, body.vz) * TICK_RATE;
+      const pivoting = live && Math.abs(input.steer) >= PIVOT_MIN_STEER && speedMs < PIVOT_SPEED;
       const result = stepDeterministicVehicle3D(vehicle, {
-        throttle: live ? clampInt(input.throttle / 10, -10, 10) : 0,
+        // No reverse: a negative throttle (S / down) is a brake instead.
+        throttle: live && !pivoting ? clampInt(input.throttle / 10, 0, 10) : 0,
         steer: live ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
-        brake: live ? 0 : 10,
+        brake: live ? (input.throttle < 0 ? 10 : 0) : 10,
       }, world);
       for (const imp of result.impulses) {
         impulses.push({ bodyId: imp.bodyId, impulse: imp.impulse, worldPoint: imp.point });
+      }
+      if (pivoting) {
+        const fade = 1 - speedMs / PIVOT_SPEED;
+        torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: PIVOT_SPEED_SIGN * (input.steer / 100) * fade * PIVOT_TORQUE * MASS_UNIT, z: 0 } });
       }
       if (spinLeft > 0) {
         torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: ARMS.tentacles.missSpinTorque * MASS_UNIT * 0.001, z: 0 } });
@@ -578,5 +597,6 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
     players,
     slicks: state.slicks,
     finishOrder: state.finishOrder,
+    activeCells: state.activeCells,
   };
 }

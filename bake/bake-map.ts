@@ -26,7 +26,6 @@ const corridor = JSON.parse(readFileSync(cache('corridor'), 'utf8')) as { polyli
 // ---- tunables (spec values) ----
 const ROAD_HALF_WIDTH_M: Record<string, number> = { motorway: 7, trunk: 6, primary: 5, secondary: 4, tertiary: 3.5, residential: 3, unclassified: 2, living_street: 2, service: 2, pedestrian: 2 };
 const SIMPLIFY_ROAD_M = 1.5, SIMPLIFY_BUILDING_M = 1.0, MIN_BUILDING_AREA_M2 = 20;
-const COLLIDE_NEAR_ROAD_M = Number(process.env['COLLIDE_NEAR'] ?? 25);
 const MAX_HULL_VERTS = 8;
 const dm = (m: number): number => Math.round(m * 10);
 
@@ -192,13 +191,94 @@ function roadIntrusion(poly: Pt[], margin: number): number {
   }
   return worst;
 }
-const ROAD_CLEARANCE_M = Number(process.env['CLEARANCE'] ?? 1.2); // free margin kept beside each road's half-width
-let carved = 0;
+const ROAD_CLEARANCE_M = 1.2; // free margin kept beside each road's half-width (no env override: a stray setting once shipped a broken map)
+
+// ---- clipping: cut a collider back from road lanes instead of dropping the whole building ----
+/** Keeps the part of a convex polygon where dot(n, p) >= c (Sutherland-Hodgman against one half-plane). */
+function clipHalfPlane(poly: Pt[], nx: number, nz: number, c: number): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!, b = poly[(i + 1) % poly.length]!;
+    const da = a.x * nx + a.z * nz - c, db = b.x * nx + b.z * nz - c;
+    if (da >= 0) out.push(a);
+    if ((da >= 0) !== (db >= 0)) {
+      const t = da / (da - db);
+      out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+    }
+  }
+  return out;
+}
+/** Separating-axis test between a convex polygon and a rectangle. */
+function convexOverlapsRect(poly: Pt[], rect: Pt[]): boolean {
+  const axes: Pt[] = [];
+  for (const shape of [poly, rect]) {
+    for (let i = 0; i < shape.length; i += 1) {
+      const a = shape[i]!, b = shape[(i + 1) % shape.length]!;
+      const ex = b.x - a.x, ez = b.z - a.z, len = Math.hypot(ex, ez) || 1;
+      axes.push({ x: -ez / len, z: ex / len });
+    }
+  }
+  for (const ax of axes) {
+    let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+    for (const p of poly) { const v = p.x * ax.x + p.z * ax.z; aMin = Math.min(aMin, v); aMax = Math.max(aMax, v); }
+    for (const p of rect) { const v = p.x * ax.x + p.z * ax.z; bMin = Math.min(bMin, v); bMax = Math.max(bMax, v); }
+    if (aMax <= bMin || bMax <= aMin) return false;
+  }
+  return true;
+}
+const MIN_PIECE_AREA_M2 = 3;
+const MAX_PIECES = 12;
+
+/**
+ * Collider pieces for a building: the (validated) hull of its footprint, cut back from every nearby road lane
+ * (half-width plus a free margin). A piece never overlaps a lane, but the rest of the building still blocks.
+ */
+function collidersFor(pts: Pt[], heightM: number): Pt[][] {
+  const base = colliderFor(pts, heightM);
+  if (!base) return [];
+  let pieces: Pt[][] = [base];
+  const xs = base.map((p) => p.x), zs = base.map((p) => p.z);
+  const reach = 12;
+  const gx0 = Math.floor((Math.min(...xs) - reach) / GRID), gx1 = Math.floor((Math.max(...xs) + reach) / GRID);
+  const gz0 = Math.floor((Math.min(...zs) - reach) / GRID), gz1 = Math.floor((Math.max(...zs) + reach) / GRID);
+  const seen = new Set<[Pt, Pt, number]>();
+  for (let gx = gx0; gx <= gx1; gx += 1) for (let gz = gz0; gz <= gz1; gz += 1) for (const seg of grid.get(`${gx},${gz}`) ?? []) seen.add(seg);
+  for (const [a, b, hw] of seen) {
+    const d = hw + ROAD_CLEARANCE_M;
+    const len = dist(a, b);
+    if (len < 0.01) continue;
+    const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len, nx = -uz, nz = ux;
+    const corner = (u: number, v: number): Pt => ({ x: a.x + ux * u + nx * v, z: a.z + uz * u + nz * v });
+    const rect = [corner(-d, -d), corner(len + d, -d), corner(len + d, d), corner(-d, d)];
+    const next: Pt[][] = [];
+    for (const piece of pieces) {
+      if (!convexOverlapsRect(piece, rect)) { next.push(piece); continue; }
+      const along = (u: number): number => a.x * ux + a.z * uz + u; // c for dot(u, p) >= c
+      const across = (v: number): number => a.x * nx + a.z * nz + v;
+      for (const cut of [
+        clipHalfPlane(piece, nx, nz, across(d)), // beyond the lane on the left
+        clipHalfPlane(piece, -nx, -nz, -across(-d)), // beyond the lane on the right
+        clipHalfPlane(piece, -ux, -uz, -along(-d)), // before the road's start
+        clipHalfPlane(piece, ux, uz, along(len + d)), // past the road's end
+      ]) if (cut.length >= 3 && area(cut) >= MIN_PIECE_AREA_M2) next.push(cut);
+    }
+    pieces = next.sort((p, q) => area(q) - area(p)).slice(0, MAX_PIECES);
+    if (pieces.length === 0) return [];
+  }
+  const accepted: Pt[][] = [];
+  for (const piece of pieces) {
+    const reduced = piece.length > MAX_HULL_VERTS ? reduceHull(hull(piece), MAX_HULL_VERTS) : piece;
+    for (const option of [reduced, boundingRect(reduced)]) {
+      if (option.length >= 3 && area(option) >= MIN_PIECE_AREA_M2 && engineAccepts(option, heightM)) { accepted.push(option); break; }
+    }
+  }
+  return accepted;
+}
 
 // ---- buildings ----
 const bIn = load('buildings');
 const buildings: BuildingData[] = [];
-let collidable = 0, dropped = 0, rejected = 0;
+let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0;
 for (const el of bIn.elements) {
   if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) { dropped += 1; continue; }
   let pts = toPts(el.geometry);
@@ -210,15 +290,15 @@ for (const el of bIn.elements) {
   const levels = Number(el.tags?.['building:levels']);
   const height = Number(el.tags?.['height']);
   const hM = Number.isFinite(height) && height > 0 ? height : Number.isFinite(levels) && levels > 0 ? levels * 3 : 6;
-  const centroid = { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, z: pts.reduce((s, p) => s + p.z, 0) / pts.length };
-  const near = distToRoad(centroid, COLLIDE_NEAR_ROAD_M + 15) <= COLLIDE_NEAR_ROAD_M + 15 && pts.some((p) => distToRoad(p, COLLIDE_NEAR_ROAD_M) <= COLLIDE_NEAR_ROAD_M);
-  let hullFlat: number[] | undefined;
-  if (near) {
-    const h = colliderFor(pts, hM);
-    if (h && roadIntrusion(h, ROAD_CLEARANCE_M) < 0) carved += 1; // a road runs through/along it: render only
-    else if (h) { hullFlat = flat(h); collidable += 1; } else rejected += 1;
+  const pieces = collidersFor(pts, hM);
+  const base = colliderFor(pts, hM);
+  if (pieces.length === 0) rejected += 1;
+  else {
+    collidable += 1;
+    totalPieces += pieces.length;
+    if (!base || pieces.length > 1 || area(pieces[0]!) < area(base) * 0.98) clipped += 1;
   }
-  buildings.push(hullFlat ? { h: dm(hM), pts: flat(pts), hull: hullFlat } : { h: dm(hM), pts: flat(pts) });
+  buildings.push(pieces.length > 0 ? { h: dm(hM), pts: flat(pts), hulls: pieces.map((pc) => flat(pc)) } : { h: dm(hM), pts: flat(pts) });
 }
 buildings.sort((a, b) => a.pts[0]! - b.pts[0]! || a.pts[1]! - b.pts[1]!);
 
@@ -245,7 +325,7 @@ for (const line of roadLines) for (const [i, p] of [[0, line[0]!], [1, line[line
 }
 const junctions = [...deg.values()].filter((e) => e.n >= 3).map((e) => e.p).sort((a, b) => a.x - b.x || a.z - b.z);
 const cornerPool: Pt[] = [];
-for (const b of buildings) if (b.hull) for (let i = 0; i < b.hull.length; i += 2) cornerPool.push({ x: b.hull[i]! / 10, z: b.hull[i + 1]! / 10 });
+for (const b of buildings) for (const hl of b.hulls ?? []) for (let i = 0; i < hl.length; i += 2) cornerPool.push({ x: hl[i]! / 10, z: hl[i + 1]! / 10 });
 const anchors: Pt[] = [];
 const spaced = (p: Pt): boolean => anchors.every((a) => dist(a, p) >= 20);
 for (const l of lamps) if (distToRoad(l, 12) <= 12 && spaced(l)) anchors.push(l);
@@ -334,7 +414,7 @@ mkdirSync('public/cdn-assets/accra', { recursive: true });
 writeFileSync(`bake/out/${id}.map.json`, json);
 writeFileSync(`public/cdn-assets/accra/${id}.map.json.gz`, gz);
 console.log(`${id}: ${(json.length / 1024).toFixed(0)} KB json, ${(gz.length / 1024).toFixed(0)} KB gzip`);
-console.log(`  roads ${roads.length}, buildings ${buildings.length} (collidable ${collidable}, carved for road clearance ${carved}, dropped ${dropped}, no valid collider ${rejected}), walls ${walls.length}, anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
+console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, no valid collider ${rejected}), walls ${walls.length}, anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
 console.log(`  checkpoints ${checkpoints.length}, route ${Math.round(total)} m, OSM base ${bIn.osmDate}`);
 const BUDGET = 4 * 1024 * 1024;
 if (gz.length > BUDGET) { console.error(`BUDGET EXCEEDED: ${gz.length} > ${BUDGET}`); process.exit(1); }

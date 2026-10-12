@@ -40,6 +40,7 @@ export interface UiState {
   /** One-line diagnostics for the on-screen readout. */
   readonly diag: string;
   readonly graphics: Graphics;
+  readonly showColliders: boolean;
   /** Number of checkpoints on the current map. */
   readonly checkpointTotal: number;
   /** Direction to the next checkpoint relative to the car's heading (degrees, + = to the left) and distance in metres. */
@@ -50,6 +51,8 @@ type Listener = (state: UiState) => void;
 
 /** How long a connect or a room sync may take before we give up and let the player retry. */
 const CONNECT_TIMEOUT_MS = 20000;
+/** A live race that makes no progress for this long is treated as a lost connection. */
+const STALL_TIMEOUT_MS = 8000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -74,6 +77,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
 function friendlyError(message: string): string {
   if (/duplicate session/i.test(message)) return 'You are still seated in a previous room. Wait a few seconds and try again.';
   if (/rate limit/i.test(message)) return 'The server is busy. Please try again in a moment.';
+  if (/stalled/i.test(message)) return 'The connection to the race stalled. Rejoin to pick up where you left off.';
   if (/timed out/i.test(message)) return 'Could not reach the room in time. Check your connection and try again.';
   return message || 'Connection problem';
 }
@@ -103,6 +107,7 @@ export class Game {
   private qualityCooldown = 0;
   private gpuText = '';
   private graphics: Graphics = 'auto';
+  private showColliders = false;
   /** In Auto, the sharpest step the GPU has proven it can hold; raised again only after a long steady spell. */
   private ceiling = 0;
   private ceilingAge = 0;
@@ -112,6 +117,8 @@ export class Game {
   private perfMaxUpdate = 0;
   private perfSince = 0;
   private syncingSince = 0;
+  private stallSince = 0;
+  private lastPredicted = -1;
   private perfRollbacks = 0;
   private unsubscribe: () => void;
 
@@ -185,6 +192,7 @@ export class Game {
       simMs: this.perf.updateMs,
       diag: this.diag(),
       graphics: this.graphics,
+      showColliders: this.showColliders,
       checkpointTotal: this.map?.checkpoints.length ?? 0,
       hint: this.hint(frame, snap?.localSlot ?? 0),
     };
@@ -246,6 +254,11 @@ export class Game {
     }
   }
 
+  toggleColliders(): void {
+    this.showColliders = !this.showColliders;
+    this.emit();
+  }
+
   cycleGraphics(): void {
     this.graphics = GRAPHICS_ORDER[(GRAPHICS_ORDER.indexOf(this.graphics) + 1) % GRAPHICS_ORDER.length]!;
     this.applyGraphics();
@@ -270,23 +283,50 @@ export class Game {
     RundotGameAPI.deviceCache.setItem(GRAPHICS_STORAGE_KEY, this.graphics).catch(() => undefined);
   }
 
-  /** If a session sits in connecting/syncing without ever going live, stop and let the player retry. */
+  /**
+   * Self-heal for a networked game that stops making progress. Two cases: a session that never finishes
+   * syncing, and a live session that freezes (the connection is "reconnecting", or the clock has not
+   * advanced). After a few seconds we stop waiting and offer a clean rejoin, which re-syncs from the server's
+   * state instead of grinding through a long backlog of catch-up ticks.
+   */
   private watchSync(now: number): void {
-    const status = this.snapshot?.status;
+    const snap = this.snapshot;
+    const status = snap?.status;
+    const networked = this.lastRoom !== '';
     const waiting = this.screen === 'play' && (status === 'syncing' || status === 'connecting');
-    if (!waiting) {
-      this.syncingSince = 0;
+    if (!waiting) this.syncingSince = 0;
+    else {
+      if (this.syncingSince === 0) this.syncingSince = now;
+      if (now - this.syncingSince > CONNECT_TIMEOUT_MS) return this.dropToError('Timed out while syncing with the room');
+    }
+
+    // Frozen while "live": the predicted clock stops advancing, or the transport sits in reconnecting.
+    const phase = snap?.interpolatedRenderState?.phase ?? snap?.renderState?.phase;
+    const racing = networked && this.screen === 'play' && status === 'live' && phase !== undefined && phase !== 'BUILD' && phase !== 'RESULTS';
+    if (!racing) {
+      this.stallSince = 0;
+      this.lastPredicted = -1;
       return;
     }
-    if (this.syncingSince === 0) this.syncingSince = now;
-    if (now - this.syncingSince > CONNECT_TIMEOUT_MS) {
-      this.syncingSince = 0;
-      this.runner.stop();
-      this.screen = 'error';
-      this.errorDetail = 'Timed out while syncing with the room';
-      this.error = friendlyError(this.errorDetail);
-      this.emit();
+    const predicted = snap?.predictedThrough ?? -1;
+    const stuck = snap?.connection === 'reconnecting' || predicted === this.lastPredicted;
+    this.lastPredicted = predicted;
+    if (!stuck) {
+      this.stallSince = 0;
+      return;
     }
+    if (this.stallSince === 0) this.stallSince = now;
+    if (now - this.stallSince > STALL_TIMEOUT_MS) this.dropToError('The connection stalled');
+  }
+
+  private dropToError(detail: string): void {
+    this.syncingSince = 0;
+    this.stallSince = 0;
+    this.runner.stop();
+    this.screen = 'error';
+    this.errorDetail = detail;
+    this.error = friendlyError(detail);
+    this.emit();
   }
 
   private frame = (now: number): void => {
@@ -304,7 +344,7 @@ export class Game {
     }
     const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
     const r0 = performance.now();
-    this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000);
+    this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders);
     this.perfRender += performance.now() - r0;
     this.perfFrames += 1;
     if (dt > this.perfMaxFrame) this.perfMaxFrame = dt;

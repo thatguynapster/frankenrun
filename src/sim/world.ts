@@ -26,6 +26,8 @@ export interface PreparedMap {
   cellOf(x: number, z: number): number;
   /** The static body holding one cell's building colliders (id `bld-<cell>`), or undefined when the cell has none. */
   cellBody(cell: number): DeterministicPhysicsBody3D | undefined;
+  /** The collider footprints in a cell (decimetres) and their height, for the collider debug view. */
+  cellHulls(cell: number): { footprint: readonly number[]; heightM: number }[];
 }
 
 /** Edge length of a collision cell in metres. A car keeps its own cell and the 8 around it loaded. */
@@ -53,7 +55,7 @@ export function greyboxMap(): MapData {
     roads: [],
     buildings: OBSTACLES.map((o) => {
       const hull = [o.x - o.halfX, o.z - o.halfZ, o.x + o.halfX, o.z - o.halfZ, o.x + o.halfX, o.z + o.halfZ, o.x - o.halfX, o.z + o.halfZ].map(dm);
-      return { h: dm(o.height), pts: hull, hull };
+      return { h: dm(o.height), pts: hull, hulls: [hull] };
     }),
     walls: [],
     anchors: POLES.map((p) => ({ x: dm(p.x), z: dm(p.z) })),
@@ -188,6 +190,7 @@ function buildRoadIndex(map: MapData): (x: number, z: number) => boolean {
   };
 }
 
+const PIECE_STRIDE = 16; // a building has at most 16 collider pieces
 const cellKey = (cx: number, cz: number): number => (cx + 2048) * 4096 + (cz + 2048);
 const cellOf = (x: number, z: number): number => cellKey(Math.floor(x / CELL_M), Math.floor(z / CELL_M));
 
@@ -197,27 +200,29 @@ const cellOf = (x: number, z: number): number => cellKey(Math.floor(x / CELL_M),
  * overlapping duplicate static colliders are harmless).
  */
 function buildCellIndex(map: MapData): Map<number, number[]> {
+  // Each entry encodes (building index, piece index) as building * PIECE_STRIDE + piece.
   const index = new Map<number, number[]>();
   map.buildings.forEach((b, i) => {
-    if (!b.hull) return;
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (let k = 0; k < b.hull.length; k += 2) {
-      const x = m(b.hull[k]!), z = m(b.hull[k + 1]!);
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    }
-    const cx0 = Math.floor(minX / CELL_M), cx1 = Math.floor(maxX / CELL_M);
-    const cz0 = Math.floor(minZ / CELL_M), cz1 = Math.floor(maxZ / CELL_M);
-    for (let cx = cx0; cx <= cx1; cx += 1) {
-      for (let cz = cz0; cz <= cz1; cz += 1) {
-        const key = cellKey(cx, cz);
-        const list = index.get(key);
-        if (list) list.push(i);
-        else index.set(key, [i]);
+    b.hulls?.forEach((hull, k) => {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let v = 0; v < hull.length; v += 2) {
+        const x = m(hull[v]!), z = m(hull[v + 1]!);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
       }
-    }
+      const cx0 = Math.floor(minX / CELL_M), cx1 = Math.floor(maxX / CELL_M);
+      const cz0 = Math.floor(minZ / CELL_M), cz1 = Math.floor(maxZ / CELL_M);
+      for (let cx = cx0; cx <= cx1; cx += 1) {
+        for (let cz = cz0; cz <= cz1; cz += 1) {
+          const key = cellKey(cx, cz);
+          const list = index.get(key);
+          if (list) list.push(i * PIECE_STRIDE + k);
+          else index.set(key, [i * PIECE_STRIDE + k]);
+        }
+      }
+    });
   });
   return index;
 }
@@ -249,7 +254,20 @@ export function prepareMap(map: MapData): PreparedMap {
     cellBody(cell: number): DeterministicPhysicsBody3D | undefined {
       const list = cellIndex.get(cell);
       if (!list || list.length === 0) return undefined;
-      return compound(`bld-${cell}`, list.map((i) => hullChild(map.buildings[i]!.hull!, m(map.buildings[i]!.h))), 0.4);
+      return compound(
+        `bld-${cell}`,
+        list.map((code) => {
+          const b = map.buildings[Math.floor(code / PIECE_STRIDE)]!;
+          return hullChild(b.hulls![code % PIECE_STRIDE]!, m(b.h));
+        }),
+        0.4,
+      );
+    },
+    cellHulls(cell: number): { footprint: readonly number[]; heightM: number }[] {
+      return (cellIndex.get(cell) ?? []).map((code) => {
+        const b = map.buildings[Math.floor(code / PIECE_STRIDE)]!;
+        return { footprint: b.hulls![code % PIECE_STRIDE]!, heightM: m(b.h) };
+      });
     },
   };
   prepared.set(map, result);
