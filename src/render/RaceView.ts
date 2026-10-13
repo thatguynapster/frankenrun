@@ -34,6 +34,9 @@ export class RaceView {
   private colliderLines: THREE.LineSegments | undefined;
   private colliderSignature = '';
   private slickPool: THREE.Mesh[] = [];
+  private pickupPool: { group: THREE.Group; gem: THREE.Mesh; beam: THREE.Mesh }[] = [];
+  private pickupMats = [LEGS_COLOR, ARMS_COLOR, HEAD_COLOR].map((color) => new THREE.MeshBasicMaterial({ color }));
+  private beamMats = [LEGS_COLOR, ARMS_COLOR, HEAD_COLOR].map((color) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false }));
   private slickGeo = new THREE.CircleGeometry(HEADS.slime.slickRadius, 20);
   private slickMat = new THREE.MeshBasicMaterial({ color: 0x4dff6a, transparent: true, opacity: 0.45 });
   private resizeObserver: ResizeObserver;
@@ -305,6 +308,32 @@ export class RaceView {
     return { group, torso, legs, arms, head, rope };
   }
 
+  /** Parts lying in the world: a spinning gem in the slot's colour on a tall translucent beam, visible from afar. */
+  private updatePickups(frame: GameProjection, timeSeconds: number): void {
+    while (this.pickupPool.length < frame.pickups.length) {
+      const group = new THREE.Group();
+      const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), this.pickupMats[0]!);
+      gem.position.y = 1.4;
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 14, 8, 1, true), this.beamMats[0]!);
+      beam.position.y = 7;
+      group.add(gem, beam);
+      this.scene.add(group);
+      this.pickupPool.push({ group, gem, beam });
+    }
+    const slotIndex = { legs: 0, arms: 1, head: 2 } as const;
+    this.pickupPool.forEach((entry, i) => {
+      const pk = frame.pickups[i];
+      entry.group.visible = pk !== undefined;
+      if (pk === undefined) return;
+      const idx = slotIndex[pk.slot];
+      entry.group.position.set(pk.x, 0, pk.z);
+      entry.gem.material = this.pickupMats[idx]!;
+      entry.beam.material = this.beamMats[idx]!;
+      entry.gem.rotation.y = timeSeconds * 2;
+      entry.gem.position.y = 1.4 + Math.sin(timeSeconds * 3) * 0.25;
+    });
+  }
+
   private updateSlicks(frame: GameProjection): void {
     while (this.slickPool.length < frame.slicks.length) {
       const m = new THREE.Mesh(this.slickGeo, this.slickMat);
@@ -421,6 +450,7 @@ export class RaceView {
         if (rig !== undefined) this.updateCar(rig, p);
       });
       this.updateSlicks(frame);
+      this.updatePickups(frame, frame.frame / 30);
       const local = frame.players[localSlot] ?? frame.players[0];
       this.updateCamera(local, dtSeconds);
       const next = local === undefined ? 0 : local.nextCheckpoint;

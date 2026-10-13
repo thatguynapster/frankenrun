@@ -199,6 +199,20 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           </span>
           <span>{Math.round(me.speed * 3.6)} km/h</span>
         </div>
+        <div className="part-slots">
+          {(
+            [
+              ['legs', 'Legs', LEG_PARTS],
+              ['arms', 'Arms', ARM_PARTS],
+              ['head', 'Head', HEAD_PARTS],
+            ] as const
+          ).map(([key, label, parts]) => (
+            <span key={key} className={`part-slot ${key} ${me.build[key] === 0 ? 'empty' : ''} ${frame.frame - me.lastLossTick < 45 ? 'flash' : ''}`}>
+              <small>{label}</small>
+              {me.build[key] === 0 ? 'empty' : parts[me.build[key]]?.name}
+            </span>
+          ))}
+        </div>
         {ui.hint && me.finishTick < 0 && (
           <div className="waypoint">
             <div className="arrow" style={{ transform: `rotate(${-ui.hint.angle}deg)` }} />
@@ -260,6 +274,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
                 <li key={i}>
                   Player {slot + 1}
                   {slot === me.slot ? ' (you)' : ''} - {((t - 90) / TICK).toFixed(1)}s
+                  <small className="muted"> · parts lost {frame.players[slot]?.partsLost ?? 0}, picked up {frame.players[slot]?.partsGained ?? 0}</small>
                 </li>
               );
             })}
@@ -268,6 +283,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
               .map((p) => (
                 <li key={`dnf-${p.slot}`} className="muted">
                   Player {p.slot + 1} - {frame.phase === 'RESULTS' ? 'DNF' : 'racing...'}
+                  <small> · parts lost {p.partsLost}, picked up {p.partsGained}</small>
                 </li>
               ))}
           </ol>

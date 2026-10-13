@@ -29,7 +29,17 @@ import {
   GRAVITY_Y,
   HEADS,
   HEAD_PARTS,
+  HIT_COOLDOWN_TICKS,
+  HIT_MIN_CLOSING_MS,
   LEG_PARTS,
+  MISSING_SLOT_MASS,
+  MISSING_SLOT_SPEED,
+  PICKUP_ARM_TICKS,
+  PICKUP_LIFE_TICKS,
+  PICKUP_OWNER_BLOCK_TICKS,
+  PICKUP_RADIUS,
+  WALL_HIT_MIN_CLOSING_MS,
+  WALL_HIT_MIN_SPEED_MS,
   MASS_UNIT,
   RESET_FREEZE_TICKS,
   RESET_HOLD_TICKS,
@@ -107,6 +117,30 @@ export interface PlayerState {
   readonly swing: Swing | null;
   readonly resetHold: number;
   readonly frozenUntil: number;
+  /** Hits taken since the last part fell off. */
+  readonly hits: number;
+  readonly hitCooldownUntil: number;
+  readonly partsLost: number;
+  readonly partsGained: number;
+  readonly lastLossTick: number;
+}
+
+export type SlotKey = 'legs' | 'arms' | 'head';
+const SLOT_KEYS: readonly SlotKey[] = ['legs', 'arms', 'head'];
+
+/** A part lying in the world after it fell off a monster. */
+export interface Pickup {
+  readonly id: number;
+  readonly slot: SlotKey;
+  readonly part: number;
+  readonly x: number;
+  readonly z: number;
+  readonly expires: number;
+  /** Cannot be picked up before this tick. */
+  readonly armedAt: number;
+  /** The monster it fell off cannot pick it up again before this tick. */
+  readonly owner: number;
+  readonly ownerArmedAt: number;
 }
 
 export interface Slick {
@@ -123,6 +157,9 @@ export interface GameState {
   readonly physics: DeterministicPhysicsWorld3D;
   readonly players: readonly PlayerState[];
   readonly slicks: readonly Slick[];
+  readonly pickups: readonly Pickup[];
+  readonly nextPickupId: number;
+  readonly seed: number;
   readonly finishOrder: readonly number[];
   /** Sorted collision cells whose building colliders are currently loaded in the physics world. */
   readonly activeCells: readonly number[];
@@ -157,6 +194,9 @@ export interface PlayerView {
   readonly headCooldown: number;
   readonly swingPole: number; // -1 when not swinging
   readonly trailing: boolean;
+  readonly partsLost: number;
+  readonly partsGained: number;
+  readonly lastLossTick: number;
 }
 
 export interface GameProjection {
@@ -165,6 +205,7 @@ export interface GameProjection {
   readonly phaseTicks: number; // ticks elapsed in the current phase
   readonly players: readonly PlayerView[];
   readonly slicks: readonly Slick[];
+  readonly pickups: readonly Pickup[];
   readonly finishOrder: readonly number[];
   /** Collision cells whose colliders are currently loaded (for the collider debug view). */
   readonly activeCells: readonly number[];
@@ -200,14 +241,25 @@ function legsOf(build: Build): LegsDef {
 /** Total mass multiplier: body plus the weight of its parts. */
 export function massOf(build: Build): number {
   const body = BODIES[build.body] ?? BODIES[0]!;
-  return body.mass + legsOf(build).mass + (ARM_PARTS[build.arms]?.mass ?? 0) + (HEAD_PARTS[build.head]?.mass ?? 0);
+  const mass = body.mass + legsOf(build).mass + (ARM_PARTS[build.arms]?.mass ?? 0) + (HEAD_PARTS[build.head]?.mass ?? 0);
+  return Math.max(0.3, mass - MISSING_SLOT_MASS * missingSlots(build));
+}
+
+/** Slots with nothing equipped (never chosen, or lost in the race). */
+export function missingSlots(build: Build): number {
+  return (build.legs === 0 ? 1 : 0) + (build.arms === 0 ? 1 : 0) + (build.head === 0 ? 1 : 0);
+}
+
+/** Top speed multiplier from empty slots (the comeback mechanic). */
+function stripBonus(build: Build): number {
+  return 1 + MISSING_SLOT_SPEED * missingSlots(build);
 }
 
 function chassisBody(slot: number, build: Build, x: number, z: number, yaw: number): DeterministicPhysicsBody3D {
   const body = BODIES[build.body] ?? BODIES[0]!;
   const legs = legsOf(build);
   const drive = BASE_ACCEL * body.accel * legs.driveMul;
-  const topPerTick = (BASE_TOP_SPEED * legs.topSpeedMul) / 30;
+  const topPerTick = (BASE_TOP_SPEED * legs.topSpeedMul * stripBonus(build)) / 30;
   const half = yaw / 2;
   return {
     id: carId(slot),
@@ -228,6 +280,7 @@ function chassisBody(slot: number, build: Build, x: number, z: number, yaw: numb
     layer: CAR_LAYER,
     mask: ALL,
     material: { friction: 0.3, restitution: 0.3 },
+    callbackMask: 1, // collisionEnter events, which drive part loss
   };
 }
 
@@ -283,6 +336,11 @@ function newPlayer(slot: number): PlayerState {
     swing: null,
     resetHold: 0,
     frozenUntil: 0,
+    hits: 0,
+    hitCooldownUntil: 0,
+    partsLost: 0,
+    partsGained: 0,
+    lastLossTick: -1000,
   };
 }
 
@@ -296,6 +354,9 @@ export function createGameState(config: SessionConfig, prep: PreparedMap): GameS
     physics: createDeterministicPhysicsWorld3D(prep.staticBodies),
     players,
     slicks: [],
+    pickups: [],
+    nextPickupId: 1,
+    seed: config.seed,
     finishOrder: [],
     activeCells: [],
   };
@@ -368,6 +429,23 @@ function syncBuildings(
   const remove = active.filter((key) => !want.has(key) && deterministicPhysicsBodyById3D(world, `bld-${key}`) !== undefined).map((key) => `bld-${key}`);
   const edited = add.length > 0 || remove.length > 0 ? applyDeterministicWorldEdit3D(world, { add, remove }) : world;
   return { world: edited, activeCells: next };
+}
+
+/** Deterministic hash used for part-loss choices: depends only on the session seed, the tick and the monster. */
+function hash32(a: number, b: number, c: number): number {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35);
+  h ^= h >>> 13;
+  h = Math.imul(h ^ c, 0x27d4eb2f);
+  h ^= h >>> 15;
+  return h >>> 0;
+}
+
+const slotOfCar = (id: string): number => (id.startsWith('car-') ? Number(id.slice(4)) : -1);
+
+/** Same body, new mass and top speed for a changed build (position, velocity and spin are kept). */
+function retuned(existing: DeterministicPhysicsBody3D, slot: number, build: Build): DeterministicPhysicsBody3D {
+  const fresh = chassisBody(slot, build, 0, 0, 0);
+  return { ...existing, mass: fresh.mass, linearDamping: fresh.linearDamping };
 }
 
 export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
@@ -515,7 +593,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         impulses.push({ bodyId: imp.bodyId, impulse: imp.impulse, worldPoint: imp.point });
       }
       if (pivoting) {
-        const fade = 1 - speedMs / PIVOT_SPEED;
+        const fade = Math.min(1, (1 - speedMs / PIVOT_SPEED) * 2.5); // full torque until 60% of the pivot speed
         torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: PIVOT_SPEED_SIGN * (input.steer / 100) * fade * PIVOT_TORQUE * MASS_UNIT, z: 0 } });
       }
       if (spinLeft > 0) {
@@ -546,7 +624,15 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   }
 
   if (driving) ({ world, activeCells } = syncBuildings(world, prep, players, activeCells));
-  world = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints, computeChecksum: false }).world;
+  const preSpeed = new Map<number, number>();
+  for (const p of players) {
+    const b = deterministicPhysicsBodyById3D(world, carId(p.slot));
+    if (b !== undefined) preSpeed.set(p.slot, Math.hypot(b.vx, b.vz) * TICK_RATE);
+  }
+  const stepped = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints, computeChecksum: false });
+  world = stepped.world;
+  let pickups = state.pickups.filter((pk) => pk.expires > frame);
+  let nextPickupId = state.nextPickupId;
 
   if (racing) {
     const finishedNow: number[] = [];
@@ -565,6 +651,102 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       return { ...p, nextCheckpoint: next };
     });
     if (finishedNow.length > 0) finishOrder = [...finishOrder, ...finishedNow];
+
+    // --- hits and part loss ---
+    const hitAt = new Map<number, { x: number; z: number }>();
+    const contacts = [...stepped.contacts]
+      .filter((c) => c.type === 'enter' && !c.trigger)
+      .sort((a, b) => (a.pair < b.pair ? -1 : a.pair > b.pair ? 1 : 0));
+    for (const c of contacts) {
+      const closing = (c.closingSpeed ?? 0) * TICK_RATE;
+      const sa = slotOfCar(c.a), sb = slotOfCar(c.b);
+      const point = { x: c.point?.x ?? 0, z: c.point?.z ?? 0 };
+      if (sa >= 0 && sb >= 0) {
+        if (closing >= HIT_MIN_CLOSING_MS) {
+          hitAt.set(sa, point);
+          hitAt.set(sb, point);
+        }
+      } else {
+        const car = sa >= 0 ? sa : sb;
+        if (car >= 0 && (preSpeed.get(car) ?? 0) >= WALL_HIT_MIN_SPEED_MS && closing >= WALL_HIT_MIN_CLOSING_MS) hitAt.set(car, point);
+      }
+    }
+    const changed = new Set<number>();
+    players = players.map((p) => {
+      const point = hitAt.get(p.slot);
+      if (point === undefined || p.finishTick >= 0 || frame < p.hitCooldownUntil) return p;
+      const body = BODIES[p.build.body] ?? BODIES[0]!;
+      const hits = p.hits + 1;
+      const equipped = SLOT_KEYS.filter((k) => p.build[k] !== 0);
+      if (hits < body.hitsToLose || equipped.length === 0) {
+        return { ...p, hits: Math.min(hits, body.hitsToLose), hitCooldownUntil: frame + HIT_COOLDOWN_TICKS };
+      }
+      const lostSlot = equipped[hash32(state.seed, frame, p.slot) % equipped.length]!;
+      pickups = [
+        ...pickups,
+        {
+          id: nextPickupId,
+          slot: lostSlot,
+          part: p.build[lostSlot],
+          x: point.x,
+          z: point.z,
+          expires: frame + PICKUP_LIFE_TICKS,
+          armedAt: frame + PICKUP_ARM_TICKS,
+          owner: p.slot,
+          ownerArmedAt: frame + PICKUP_OWNER_BLOCK_TICKS,
+        },
+      ];
+      nextPickupId += 1;
+      changed.add(p.slot);
+      return { ...p, build: { ...p.build, [lostSlot]: 0 }, hits: 0, hitCooldownUntil: frame + HIT_COOLDOWN_TICKS, partsLost: p.partsLost + 1, lastLossTick: frame };
+    });
+
+    // --- pickups: driving through one fills an empty slot ---
+    if (pickups.length > 0) {
+      const taken = new Set<number>();
+      players = players.map((p) => {
+        if (p.finishTick >= 0) return p;
+        const body = deterministicPhysicsBodyById3D(world, carId(p.slot));
+        if (body === undefined) return p;
+        let q = p;
+        for (const pk of pickups) {
+          if (taken.has(pk.id) || q.build[pk.slot] !== 0) continue;
+          if (frame < pk.armedAt || (pk.owner === q.slot && frame < pk.ownerArmedAt)) continue;
+          if (Math.hypot(body.x - pk.x, body.z - pk.z) > PICKUP_RADIUS) continue;
+          taken.add(pk.id);
+          q = { ...q, build: { ...q.build, [pk.slot]: pk.part }, partsGained: q.partsGained + 1 };
+        }
+        if (q !== p) changed.add(q.slot);
+        return q;
+      });
+      if (taken.size > 0) pickups = pickups.filter((pk) => !taken.has(pk.id));
+    }
+
+    // A changed build changes mass and top speed: retune each affected body, and drop abilities that lost their part.
+    if (changed.size > 0) {
+      const edits: DeterministicPhysicsBody3D[] = [];
+      const ropes: string[] = [];
+      const lostSwing = new Set<number>();
+      const lostTrail = new Set<number>();
+      for (const slot of [...changed].sort((a, b) => a - b)) {
+        const cur = players[slot]!;
+        const body = deterministicPhysicsBodyById3D(world, carId(slot));
+        if (body !== undefined) edits.push(retuned(body, slot, cur.build));
+        if (cur.swing !== null && cur.build.arms !== ARM_TENTACLES) {
+          ropes.push(ropeId(slot));
+          lostSwing.add(slot);
+        }
+        if (cur.trailLeft > 0 && cur.build.head !== HEAD_SLIME) lostTrail.add(slot);
+      }
+      if (lostSwing.size > 0 || lostTrail.size > 0) {
+        players = players.map((pl) => ({
+          ...pl,
+          swing: lostSwing.has(pl.slot) ? null : pl.swing,
+          trailLeft: lostTrail.has(pl.slot) ? 0 : pl.trailLeft,
+        }));
+      }
+      world = applyDeterministicWorldEdit3D(world, { replace: edits, removeJointIds: ropes });
+    }
     const allDone = players.every((p) => p.finishTick >= 0);
     const firstFinish = finishOrder.length > 0 ? players[finishOrder[0]!]!.finishTick : -1;
     if (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS)) {
@@ -573,7 +755,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, finishOrder, activeCells };
+  return { frame, phase, phaseStart, physics: world, players, slicks, pickups, nextPickupId, seed: state.seed, finishOrder, activeCells };
 }
 
 export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
@@ -604,6 +786,9 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       headCooldown: p.headCooldown,
       swingPole: p.swing === null ? -1 : p.swing.pole,
       trailing: p.trailLeft > 0,
+      partsLost: p.partsLost,
+      partsGained: p.partsGained,
+      lastLossTick: p.lastLossTick,
     };
   });
   return {
@@ -612,6 +797,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
     phaseTicks: state.frame - state.phaseStart,
     players,
     slicks: state.slicks,
+    pickups: state.pickups,
     finishOrder: state.finishOrder,
     activeCells: state.activeCells,
   };
@@ -622,7 +808,7 @@ export function buildStats(build: Build): { topKmh: number; accel: number; grip:
   const body = BODIES[build.body] ?? BODIES[0]!;
   const legs = legsOf(build);
   return {
-    topKmh: Math.round(BASE_TOP_SPEED * legs.topSpeedMul * 3.6),
+    topKmh: Math.round(BASE_TOP_SPEED * legs.topSpeedMul * stripBonus(build) * 3.6),
     accel: body.accel * legs.driveMul,
     grip: (body.turn / BODIES[0]!.turn) * legs.gripMul,
     mass: massOf(build),

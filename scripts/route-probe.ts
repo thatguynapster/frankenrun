@@ -11,14 +11,19 @@ const mapId = process.env['MAP'] ?? 'route1';
 const prep = getPreparedMap(mapId);
 const { polyline } = JSON.parse(readFileSync(`bake/cache/${mapId}-corridor.json`, 'utf8')) as { polyline: { x: number; z: number }[] };
 const config = { game: 'frankenrun', map: mapId, players: 2, seed: 1, tickRateHz: 30, version: 1 };
-const LEGS = process.env['LEGS'] !== '0';
+const LEGS = Number(process.env['LEGS'] ?? 1); // part ids for the pilot's monster: LEGS, ARMS, HEAD, BODY env vars
+const ARMS = Number(process.env['ARMS'] ?? 0);
+const HEAD = Number(process.env['HEAD'] ?? 0);
+const BODY = Number(process.env['BODY'] ?? 0);
 
 let state: GameState = createGameState(config, prep);
 let progress = [0, 0]; // furthest polyline index reached per player
 const wedged: number[] = [0, 0];
+const turnSign: number[] = [0, 0];
+const recovery = [0, 1].map(() => ({ count: 0, pivoting: false, drive: 0, ticks: 0, px: 0, pz: 0 }));
 
 function pilot(slot: number): GameInput {
-  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0 };
+  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD };
   const v = projectGame(state, prep).players[slot]!;
   // Advance only once the car is actually at the next vertex, so corners are never skipped or cut.
   let best = progress[slot]!;
@@ -45,7 +50,11 @@ function pilot(slot: number): GameInput {
   const fx = Math.sin(yaw), fz = Math.cos(yaw);
   const dx = target.x - v.x, dz = target.z - v.z;
   const err = Math.atan2(fz * dx - fx * dz, fx * dx + fz * dz);
-  const steer = Math.max(-100, Math.min(100, Math.round(err * 160)));
+  // Slow and facing well away from the target: pivot on the spot in one committed direction until it is roughly
+  // ahead, instead of flipping direction as the error crosses +-180 degrees.
+  if (v.speed < 3 && Math.abs(err) > 1.5 && turnSign[slot] === 0) turnSign[slot] = err >= 0 ? 1 : -1;
+  if (Math.abs(err) < 0.5) turnSign[slot] = 0;
+  const steer = turnSign[slot] !== 0 && v.speed < 3 ? 100 * (turnSign[slot] ?? 1) : Math.max(-100, Math.min(100, Math.round(err * 160)));
   // Brake for upcoming corners: compare the heading to a point farther ahead than the steering target.
   let far = polyline[polyline.length - 1]!;
   let accFar = 0;
@@ -59,17 +68,32 @@ function pilot(slot: number): GameInput {
   const cap = Number(process.env['SPEEDCAP'] ?? 999);
   let throttle = Math.abs(err) > 0.7 ? 35 : speedKmh > Math.min(cap, wanted) + 10 ? -60 : speedKmh > Math.min(cap, wanted) ? 0 : 100;
   // Recover when wedged: reverse out with opposite lock for ~1.5 s.
-  if (v.speed < 0.4 && state.phase === 'RACING' && (wedged[slot] ?? 0) >= 0) wedged[slot] = (wedged[slot] ?? 0) + 1; else if (v.speed > 2 && (wedged[slot] ?? 0) >= 0) wedged[slot] = 0;
-  // Monsters cannot reverse: when wedged, stop and pivot to face the nearest road point, drive there for ~1.5 s, then resume.
-  if ((wedged[slot] ?? 0) < 0) { wedged[slot] = (wedged[slot] ?? 0) + 1; return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 100, steer }; }
-  if ((wedged[slot] ?? 0) > 20) {
-    const road = polyline[best]!;
-    const err2 = Math.atan2(fz * (road.x - v.x) - fx * (road.z - v.z), fx * (road.x - v.x) + fz * (road.z - v.z));
-    if (Math.abs(err2) < 0.3 || (wedged[slot] ?? 0) > 150) { wedged[slot] = -45; return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 100, steer: Math.max(-100, Math.min(100, Math.round(err2 * 160))) }; }
-    return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 0, steer: err2 >= 0 ? 100 : -100 };
+  if (v.speed < 0.4 && state.phase === 'RACING') wedged[slot] = (wedged[slot] ?? 0) + 1; else if (v.speed > 2) wedged[slot] = 0;
+  // Monsters cannot reverse. When wedged: stop and pivot to a fresh heading (alternating sides, widening), then drive
+  // off that way for ~1.3 s before resuming the route.
+  const sel = { ...DEFAULT_INPUT, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD };
+  const toward = (px: number, pz: number): number => Math.atan2(fz * (px - v.x) - fx * (pz - v.z), fx * (px - v.x) + fz * (pz - v.z));
+  const rc = recovery[slot]!;
+  if (rc.drive > 0) {
+    rc.drive -= 1;
+    return { ...sel, throttle: 100, steer: Math.max(-100, Math.min(100, Math.round(toward(rc.px, rc.pz) * 160))) };
   }
-  if (process.env['TRACE'] && slot === 0 && state.frame % 30 === 0 && state.frame >= 1100 && state.frame < 1700) console.log(`t${state.frame} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} yaw ${((yaw * 180) / Math.PI).toFixed(0)} tgt ${target.x.toFixed(0)},${target.z.toFixed(0)} err ${((err * 180) / Math.PI).toFixed(0)} steer ${steer} thr ${throttle} spd ${(v.speed * 3.6).toFixed(0)} prog ${best} onRoad ${prep.onRoad(v.x, v.z)} cp ${state.players[slot]!.nextCheckpoint} cpPos ${JSON.stringify(prep.checkpoints[state.players[slot]!.nextCheckpoint] ?? null)}`);
-  return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle, steer };
+  if (rc.pivoting) {
+    const e = toward(rc.px, rc.pz);
+    if (Math.abs(e) < 0.25 || rc.ticks > 120) { rc.pivoting = false; rc.drive = 40; wedged[slot] = 0; return { ...sel, throttle: 100, steer: Math.round(e * 160) }; }
+    rc.ticks += 1;
+    return { ...sel, throttle: 0, steer: e >= 0 ? 100 : -100 };
+  }
+  if ((wedged[slot] ?? 0) > 20) {
+    rc.count += 1;
+    const offset = (rc.count % 2 === 1 ? 1 : -1) * (0.9 + 0.4 * (rc.count % 3));
+    rc.px = v.x + 20 * Math.sin(yaw + offset);
+    rc.pz = v.z + 20 * Math.cos(yaw + offset);
+    rc.pivoting = true;
+    rc.ticks = 0;
+  }
+  if (process.env['TRACE'] && slot === 0 && state.frame % Number(process.env['TSTEP'] ?? 30) === 0 && state.frame >= Number(process.env['TFROM'] ?? 1100) && state.frame < Number(process.env['TTO'] ?? 1700)) console.log(`t${state.frame} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} yaw ${((yaw * 180) / Math.PI).toFixed(0)} tgt ${target.x.toFixed(0)},${target.z.toFixed(0)} err ${((err * 180) / Math.PI).toFixed(0)} steer ${steer} thr ${throttle} spd ${(v.speed * 3.6).toFixed(0)} prog ${best} onRoad ${prep.onRoad(v.x, v.z)} cp ${state.players[slot]!.nextCheckpoint} cpPos ${JSON.stringify(prep.checkpoints[state.players[slot]!.nextCheckpoint] ?? null)}`);
+  return { ...DEFAULT_INPUT, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD, throttle, steer };
 }
 
 const cpTimes: string[] = [];

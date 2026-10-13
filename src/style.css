@@ -498,3 +498,56 @@ body {
   height: 100%;
   background: #ffd23b;
 }
+
+/* Equipped parts during the race; an empty slot flashes red right after a part falls off. */
+.part-slots {
+  position: absolute;
+  top: calc(52px + var(--safe-top));
+  left: calc(12px + var(--safe-left));
+  display: flex;
+  gap: 6px;
+}
+
+.part-slot {
+  display: flex;
+  flex-direction: column;
+  min-width: 78px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  font-weight: 800;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.part-slot small {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.part-slot.legs { border-color: #ff9a2e; }
+.part-slot.arms { border-color: #b04cff; }
+.part-slot.head { border-color: #b6ff3b; }
+
+.part-slot.empty {
+  opacity: 0.45;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.part-slot.empty.flash {
+  opacity: 1;
+  border-style: solid;
+  border-color: #ff3b3b;
+  background: rgba(255, 59, 59, 0.45);
+  animation: part-lost 0.45s ease-out 2;
+}
+
+@keyframes part-lost {
+  0% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}

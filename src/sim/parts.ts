@@ -133,6 +133,23 @@ export const RIDE_HEIGHT = 1.0;
 
 // A monster cannot reverse. Instead, near a standstill it can pivot on the spot (so it can turn around when stuck
 // against a wall): below PIVOT_SPEED (m/s) steering adds a yaw torque, fading out to zero at that speed.
-export const PIVOT_SPEED = 1.2;
+export const PIVOT_SPEED = 2.5;
 export const PIVOT_TORQUE = 0.05;
 export const PIVOT_MIN_STEER = 60;
+
+// Part loss and pickups
+/** A monster-to-monster contact counts as a hit when the bodies close at least this fast (m/s). */
+export const HIT_MIN_CLOSING_MS = 3;
+/** A wall or pole counts only when the monster was already doing at least this (m/s, = 60 km/h) and hits it solidly. */
+export const WALL_HIT_MIN_SPEED_MS = 60 / 3.6;
+export const WALL_HIT_MIN_CLOSING_MS = 4;
+/** Ticks after a hit during which further contacts do not count (a scrape fires several contacts). */
+export const HIT_COOLDOWN_TICKS = 20;
+export const PICKUP_LIFE_TICKS = seconds(30);
+export const PICKUP_RADIUS = 3.5;
+/** A dropped part cannot be grabbed for this long by anyone, and by the monster it fell off for longer. */
+export const PICKUP_ARM_TICKS = 20;
+export const PICKUP_OWNER_BLOCK_TICKS = 75;
+/** Comeback mechanic: every empty slot makes the monster lighter and a little faster. */
+export const MISSING_SLOT_MASS = 0.15;
+export const MISSING_SLOT_SPEED = 0.05;
