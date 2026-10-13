@@ -390,6 +390,14 @@ const checkpoints = [...marks.map(at), poly[poly.length - 1]!].map((p) => ({ x: 
 const p0 = poly[0]!, p1 = at(Math.min(total, 25));
 const yaw = Math.atan2(p1.x - p0.x, p1.z - p0.z);
 
+// The route's centre line resampled to one point every 3 m, for the Lantern Head's guide line.
+const routeFlat: number[] = [];
+for (let s = 0; s < total; s += 3) {
+  const p = at(s);
+  routeFlat.push(dm(p.x), dm(p.z));
+}
+routeFlat.push(dm(poly[poly.length - 1]!.x), dm(poly[poly.length - 1]!.z));
+
 const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
 const PAD = 250;
 const map: MapData = {
@@ -405,6 +413,7 @@ const map: MapData = {
   walls,
   anchors: anchors.map((a) => ({ x: dm(a.x), z: dm(a.z) })),
   lengthM: Math.round(corridor.length),
+  route: routeFlat,
 };
 
 const json = Buffer.from(JSON.stringify(map), 'utf8');

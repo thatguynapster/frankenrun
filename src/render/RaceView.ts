@@ -31,6 +31,11 @@ export class RaceView {
   private worldGroup: THREE.Group | undefined;
   private anchors: { x: number; z: number }[] = [];
   private prep: PreparedMap | undefined;
+  private routePts: { x: number; z: number }[] = [];
+  private routeCp: number[] = [];
+  private lanternMesh: THREE.Mesh | undefined;
+  private lanternIndex = 0;
+  private lanternSignature = '';
   private colliderLines: THREE.LineSegments | undefined;
   private colliderSignature = '';
   private slickPool: THREE.Mesh[] = [];
@@ -82,6 +87,7 @@ export class RaceView {
     this.rings = [];
     this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
     this.prep = getPreparedMap(map.id);
+    this.setRoute(map);
     this.clearColliderLines();
 
     const { minX, maxX, minZ, maxZ } = map.bounds;
@@ -395,6 +401,83 @@ export class RaceView {
     this.camera.lookAt(this.camLook);
   }
 
+  /** Keeps the route's centre line, and which route point each checkpoint sits on, for the Lantern's guide line. */
+  private setRoute(map: MapData): void {
+    this.routePts = [];
+    for (let i = 0; i + 1 < (map.route?.length ?? 0); i += 2) this.routePts.push({ x: map.route![i]! / 10, z: map.route![i + 1]! / 10 });
+    this.routeCp = [];
+    let from = 0;
+    for (const cp of map.checkpoints) {
+      let best = from, bestD = Infinity;
+      for (let i = from; i < this.routePts.length; i += 1) {
+        const d = Math.hypot(this.routePts[i]!.x - cp.x / 10, this.routePts[i]!.z - cp.z / 10);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      this.routeCp.push(best);
+      from = best;
+    }
+    this.lanternIndex = 0;
+    this.lanternSignature = '';
+    if (this.lanternMesh) this.lanternMesh.visible = false;
+  }
+
+  /**
+   * Jack-o'-Lantern Head: a glowing ribbon on the road from the monster to its next checkpoint along the baked route.
+   * Rebuilt only when the monster moves to a different route point.
+   */
+  private updateLantern(frame: GameProjection, local: PlayerView | undefined, timeSeconds: number): void {
+    const racing = frame.phase === 'RACING' || frame.phase === 'COUNTDOWN';
+    if (local === undefined || local.build.head !== 2 || local.finishTick >= 0 || !racing || this.routePts.length < 2) {
+      if (this.lanternMesh) this.lanternMesh.visible = false;
+      return;
+    }
+    // Nearest route point, searched near the previous one (the monster moves along the route) with a global fallback.
+    const dist2 = (i: number): number => (this.routePts[i]!.x - local.x) ** 2 + (this.routePts[i]!.z - local.z) ** 2;
+    let best = this.lanternIndex;
+    const lo = Math.max(0, best - 60), hi = Math.min(this.routePts.length - 1, best + 160);
+    for (let i = lo; i <= hi; i += 1) if (dist2(i) < dist2(best)) best = i;
+    if (dist2(best) > 60 * 60) for (let i = 0; i < this.routePts.length; i += 1) if (dist2(i) < dist2(best)) best = i;
+    this.lanternIndex = best;
+    const end = this.routeCp[Math.min(local.nextCheckpoint, this.routeCp.length - 1)] ?? this.routePts.length - 1;
+    const MAX_POINTS = 140;
+    const last = Math.min(end, best + MAX_POINTS - 1);
+    if (this.lanternMesh === undefined) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_POINTS * 2 * 3), 3));
+      const indices = new Uint16Array((MAX_POINTS - 1) * 6);
+      for (let i = 0; i < MAX_POINTS - 1; i += 1) indices.set([i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 1, i * 2 + 3, i * 2 + 2], i * 6);
+      geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: 0xffa31a, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 2;
+      this.scene.add(mesh);
+      this.lanternMesh = mesh;
+    }
+    const mesh = this.lanternMesh;
+    const material = mesh.material as THREE.MeshBasicMaterial;
+    material.opacity = 0.5 + 0.2 * Math.sin(timeSeconds * 5);
+    if (last <= best) {
+      mesh.visible = false;
+      return;
+    }
+    mesh.visible = true;
+    const signature = `${best}:${last}`;
+    if (signature === this.lanternSignature) return;
+    this.lanternSignature = signature;
+    const positions = (mesh.geometry.getAttribute('position') as THREE.BufferAttribute);
+    let count = 0;
+    for (let i = best; i <= last; i += 1) {
+      const p = this.routePts[i]!, a = this.routePts[Math.max(best, i - 1)]!, b = this.routePts[Math.min(last, i + 1)]!;
+      const tx = b.x - a.x, tz = b.z - a.z, len = Math.hypot(tx, tz) || 1;
+      const nx = -tz / len, nz = tx / len, half = 1.1;
+      positions.setXYZ(count * 2, p.x + nx * half, 0.16, p.z + nz * half);
+      positions.setXYZ(count * 2 + 1, p.x - nx * half, 0.16, p.z - nz * half);
+      count += 1;
+    }
+    positions.needsUpdate = true;
+    mesh.geometry.setDrawRange(0, (count - 1) * 6);
+  }
+
   private clearColliderLines(): void {
     if (this.colliderLines) {
       this.scene.remove(this.colliderLines);
@@ -452,6 +535,7 @@ export class RaceView {
       this.updateSlicks(frame);
       this.updatePickups(frame, frame.frame / 30);
       const local = frame.players[localSlot] ?? frame.players[0];
+      this.updateLantern(frame, local, frame.frame / 30);
       this.updateCamera(local, dtSeconds);
       const next = local === undefined ? 0 : local.nextCheckpoint;
       this.rings.forEach((ring, i) => {

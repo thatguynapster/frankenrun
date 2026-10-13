@@ -28,6 +28,8 @@ import {
   FINISH_WINDOW_TICKS,
   GRAVITY_Y,
   HEADS,
+  CLAW_COOLDOWN_TICKS,
+  CLAW_REAR_COS,
   HEAD_PARTS,
   HIT_COOLDOWN_TICKS,
   HIT_MIN_CLOSING_MS,
@@ -122,6 +124,8 @@ export interface PlayerState {
   readonly hitCooldownUntil: number;
   readonly partsLost: number;
   readonly partsGained: number;
+  readonly partsStolen: number;
+  readonly clawCooldownUntil: number;
   readonly lastLossTick: number;
 }
 
@@ -196,6 +200,7 @@ export interface PlayerView {
   readonly trailing: boolean;
   readonly partsLost: number;
   readonly partsGained: number;
+  readonly partsStolen: number;
   readonly lastLossTick: number;
 }
 
@@ -220,6 +225,7 @@ const ropeId = (slot: number): string => `rope-${slot}`;
 
 const PIVOT_SPEED_SIGN = -1;
 export const ARM_TENTACLES = 1;
+export const ARM_CLAWS = 2;
 export const HEAD_SLIME = 1;
 
 const clampInt = (value: number, lo: number, hi: number): number => {
@@ -340,6 +346,8 @@ function newPlayer(slot: number): PlayerState {
     hitCooldownUntil: 0,
     partsLost: 0,
     partsGained: 0,
+    partsStolen: 0,
+    clawCooldownUntil: 0,
     lastLossTick: -1000,
   };
 }
@@ -654,6 +662,24 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
 
     // --- hits and part loss ---
     const hitAt = new Map<number, { x: number; z: number }>();
+    const steals: { attacker: number; victim: number; x: number; z: number }[] = [];
+    const stealing = new Set<number>();
+    const stolenFrom = new Set<number>();
+    /** True when `attacker` (with Crab Claws) is behind `victim`, facing it, and the claws are ready. */
+    const clawsCanSteal = (attacker: number, victim: number): boolean => {
+      const a = players[attacker], v = players[victim];
+      if (a === undefined || v === undefined || a.finishTick >= 0 || v.finishTick >= 0) return false;
+      if (a.build.arms !== ARM_CLAWS || frame < a.clawCooldownUntil || stealing.has(attacker) || stolenFrom.has(victim)) return false;
+      if (SLOT_KEYS.every((k) => v.build[k] === 0)) return false;
+      const ba = deterministicPhysicsBodyById3D(world, carId(attacker)), bv = deterministicPhysicsBodyById3D(world, carId(victim));
+      if (ba === undefined || bv === undefined) return false;
+      const dx = bv.x - ba.x, dz = bv.z - ba.z, dist = Math.hypot(dx, dz);
+      if (dist < 0.01) return false;
+      const ya = 2 * Math.atan2(ba.orientation?.y ?? 0, ba.orientation?.w ?? 1), yv = 2 * Math.atan2(bv.orientation?.y ?? 0, bv.orientation?.w ?? 1);
+      const facingVictim = (Math.sin(ya) * dx + Math.cos(ya) * dz) / dist; // attacker's nose points at the victim
+      const behindVictim = (Math.sin(yv) * dx + Math.cos(yv) * dz) / dist; // victim's heading points away from the attacker
+      return facingVictim >= CLAW_REAR_COS && behindVictim >= CLAW_REAR_COS;
+    };
     const contacts = [...stepped.contacts]
       .filter((c) => c.type === 'enter' && !c.trigger)
       .sort((a, b) => (a.pair < b.pair ? -1 : a.pair > b.pair ? 1 : 0));
@@ -663,6 +689,13 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const point = { x: c.point?.x ?? 0, z: c.point?.z ?? 0 };
       if (sa >= 0 && sb >= 0) {
         if (closing >= HIT_MIN_CLOSING_MS) {
+          for (const [attacker, victim] of [[sa, sb], [sb, sa]] as const) {
+            if (clawsCanSteal(attacker, victim)) {
+              steals.push({ attacker, victim, x: point.x, z: point.z });
+              stealing.add(attacker);
+              stolenFrom.add(victim);
+            }
+          }
           hitAt.set(sa, point);
           hitAt.set(sb, point);
         }
@@ -672,6 +705,35 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       }
     }
     const changed = new Set<number>();
+
+    // --- Crab Claws steals: the victim loses a random part; the attacker takes it into the matching empty slot, or it drops ---
+    if (steals.length > 0) {
+      const next = [...players];
+      for (const st of steals) {
+        const v = next[st.victim]!, a = next[st.attacker]!;
+        const equipped = SLOT_KEYS.filter((k) => v.build[k] !== 0);
+        if (equipped.length === 0) continue;
+        const key = equipped[hash32(state.seed ^ 0x51ea1, frame, st.victim) % equipped.length]!;
+        const part = v.build[key];
+        next[st.victim] = { ...v, build: { ...v.build, [key]: 0 }, partsLost: v.partsLost + 1, lastLossTick: frame };
+        changed.add(st.victim);
+        if (a.build[key] === 0) {
+          next[st.attacker] = { ...a, build: { ...a.build, [key]: part }, partsGained: a.partsGained + 1, partsStolen: a.partsStolen + 1, clawCooldownUntil: frame + CLAW_COOLDOWN_TICKS };
+          changed.add(st.attacker);
+        } else {
+          pickups = [
+            ...pickups,
+            { id: nextPickupId, slot: key, part, x: st.x, z: st.z, expires: frame + PICKUP_LIFE_TICKS, armedAt: frame + PICKUP_ARM_TICKS, owner: st.victim, ownerArmedAt: frame + PICKUP_OWNER_BLOCK_TICKS },
+          ];
+          nextPickupId += 1;
+          next[st.attacker] = { ...a, partsStolen: a.partsStolen + 1, clawCooldownUntil: frame + CLAW_COOLDOWN_TICKS };
+        }
+      }
+      players = next;
+    }
+    // A stolen-from monster loses a part instead of taking a normal hit from that contact.
+    for (const victim of stolenFrom) hitAt.delete(victim);
+
     players = players.map((p) => {
       const point = hitAt.get(p.slot);
       if (point === undefined || p.finishTick >= 0 || frame < p.hitCooldownUntil) return p;
@@ -788,6 +850,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       trailing: p.trailLeft > 0,
       partsLost: p.partsLost,
       partsGained: p.partsGained,
+      partsStolen: p.partsStolen,
       lastLossTick: p.lastLossTick,
     };
   });

@@ -153,3 +153,8 @@ export const PICKUP_OWNER_BLOCK_TICKS = 75;
 /** Comeback mechanic: every empty slot makes the monster lighter and a little faster. */
 export const MISSING_SLOT_MASS = 0.15;
 export const MISSING_SLOT_SPEED = 0.05;
+
+// Crab Claws: a rear hit steals a part. The attacker must be behind the victim (within this cosine of its heading)
+// and facing it, and can steal again only after the cooldown.
+export const CLAW_REAR_COS = 0.5;
+export const CLAW_COOLDOWN_TICKS = seconds(2);

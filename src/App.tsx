@@ -274,7 +274,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
                 <li key={i}>
                   Player {slot + 1}
                   {slot === me.slot ? ' (you)' : ''} - {((t - 90) / TICK).toFixed(1)}s
-                  <small className="muted"> · parts lost {frame.players[slot]?.partsLost ?? 0}, picked up {frame.players[slot]?.partsGained ?? 0}</small>
+                  <small className="muted"> · parts lost {frame.players[slot]?.partsLost ?? 0}, picked up {frame.players[slot]?.partsGained ?? 0}, stolen {frame.players[slot]?.partsStolen ?? 0}</small>
                 </li>
               );
             })}
@@ -283,7 +283,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
               .map((p) => (
                 <li key={`dnf-${p.slot}`} className="muted">
                   Player {p.slot + 1} - {frame.phase === 'RESULTS' ? 'DNF' : 'racing...'}
-                  <small> · parts lost {p.partsLost}, picked up {p.partsGained}</small>
+                  <small> · parts lost {p.partsLost}, picked up {p.partsGained}, stolen {p.partsStolen}</small>
                 </li>
               ))}
           </ol>

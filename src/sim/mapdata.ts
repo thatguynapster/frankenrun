@@ -40,4 +40,6 @@ export interface MapData {
   readonly walls: readonly WallData[];
   readonly anchors: readonly { readonly x: number; readonly z: number }[];
   readonly lengthM: number;
+  /** The route's centre line, flat [x, z, ...] decimetres, about one point per 3 m (for the Lantern's guide line). */
+  readonly route?: readonly number[];
 }
