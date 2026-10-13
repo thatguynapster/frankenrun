@@ -12,9 +12,12 @@ const HEAD_COLOR = 0xb6ff3b;
 
 interface CarRig {
   group: THREE.Group;
-  legs: THREE.Group;
-  arms: THREE.Group;
-  head: THREE.Group;
+  /** Torso mesh and seam, scaled/tinted per body. */
+  torso: THREE.Group;
+  /** One model per part id (index 0 is an empty slot and has no model). */
+  legs: (THREE.Group | undefined)[];
+  arms: (THREE.Group | undefined)[];
+  head: (THREE.Group | undefined)[];
   rope: THREE.Line;
 }
 
@@ -215,48 +218,81 @@ export class RaceView {
   private makeCar(slot: number): CarRig {
     const group = new THREE.Group();
     const bodyColor = SLOT_COLORS[slot % SLOT_COLORS.length] ?? 0xffffff;
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(CHASSIS_HALF.x * 2, CHASSIS_HALF.y * 2, CHASSIS_HALF.z * 2),
-      new THREE.MeshLambertMaterial({ color: bodyColor, flatShading: true }),
-    );
-    group.add(body);
+    const lambert = (color: number): THREE.MeshLambertMaterial => new THREE.MeshLambertMaterial({ color, flatShading: true });
+    const torso = new THREE.Group();
+    torso.add(new THREE.Mesh(new THREE.BoxGeometry(CHASSIS_HALF.x * 2, CHASSIS_HALF.y * 2, CHASSIS_HALF.z * 2), lambert(bodyColor)));
     // Stitches: a dark seam across the torso.
     const seam = new THREE.Mesh(
       new THREE.BoxGeometry(CHASSIS_HALF.x * 2 + 0.05, 0.08, 0.1),
       new THREE.MeshBasicMaterial({ color: 0x151515 }),
     );
     seam.position.set(0, 0.1, 0);
-    group.add(seam);
+    torso.add(seam);
+    group.add(torso);
 
-    const legs = new THREE.Group();
-    const legMat = new THREE.MeshLambertMaterial({ color: LEGS_COLOR, flatShading: true });
+    // Legs: 1 = Werewolf (four stout legs), 2 = Spider (eight thin legs splayed outwards).
+    const werewolf = new THREE.Group();
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.95, 6), legMat);
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.95, 6), lambert(LEGS_COLOR));
         leg.position.set(sx * 0.65, -0.45, sz * 0.9);
-        legs.add(leg);
+        werewolf.add(leg);
       }
     }
-    group.add(legs);
-
-    const arms = new THREE.Group();
-    const armMat = new THREE.MeshLambertMaterial({ color: ARMS_COLOR, flatShading: true });
+    const spider = new THREE.Group();
     for (const sx of [-1, 1]) {
-      const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 1.1, 3, 6), armMat);
+      for (const z of [-0.95, -0.32, 0.32, 0.95]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 1.15, 5), lambert(0x3a2a1a));
+        leg.position.set(sx * 0.95, -0.4, z);
+        leg.rotation.z = -sx * 0.7;
+        spider.add(leg);
+      }
+    }
+
+    // Arms: 1 = Tentacles (two long purple capsules), 2 = Crab Claws (two red pincers).
+    const tentacles = new THREE.Group();
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 1.1, 3, 6), lambert(ARMS_COLOR));
       arm.rotation.x = Math.PI / 2;
       arm.position.set(sx * 0.9, 0.1, 0.6);
-      arms.add(arm);
+      tentacles.add(arm);
     }
-    group.add(arms);
+    const claws = new THREE.Group();
+    for (const sx of [-1, 1]) {
+      const upper = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.8), lambert(0xd8452e));
+      upper.position.set(sx * 0.95, 0.1, 0.7);
+      claws.add(upper);
+      for (const side of [-1, 1]) {
+        const pincer = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.6, 5), lambert(0xe86a4a));
+        pincer.rotation.x = Math.PI / 2;
+        pincer.position.set(sx * 0.95 + side * 0.14, 0.1, 1.3);
+        claws.add(pincer);
+      }
+    }
 
-    const head = new THREE.Group();
-    const headMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.45, 10, 8),
-      new THREE.MeshLambertMaterial({ color: HEAD_COLOR, flatShading: true }),
-    );
-    headMesh.position.set(0, 0.75, 0.2);
-    head.add(headMesh);
-    group.add(head);
+    // Head: 1 = Slime Gland (green blob), 2 = Jack-o'-Lantern (orange head with a dark carved face).
+    const slime = new THREE.Group();
+    const slimeMesh = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 8), lambert(HEAD_COLOR));
+    slimeMesh.position.set(0, 0.75, 0.2);
+    slime.add(slimeMesh);
+    const lantern = new THREE.Group();
+    const pumpkin = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), lambert(0xff8a1f));
+    pumpkin.scale.set(1.1, 0.9, 1.1);
+    pumpkin.position.set(0, 0.75, 0.2);
+    lantern.add(pumpkin);
+    for (const sx of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.05), new THREE.MeshBasicMaterial({ color: 0xffe84a }));
+      eye.position.set(sx * 0.18, 0.82, 0.7);
+      lantern.add(eye);
+    }
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.08, 0.05), new THREE.MeshBasicMaterial({ color: 0xffe84a }));
+    mouth.position.set(0, 0.62, 0.7);
+    lantern.add(mouth);
+
+    const legs = [undefined, werewolf, spider];
+    const arms = [undefined, tentacles, claws];
+    const head = [undefined, slime, lantern];
+    for (const g of [...legs, ...arms, ...head]) if (g) group.add(g);
 
     const rope = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
@@ -266,7 +302,7 @@ export class RaceView {
     rope.visible = false;
     this.scene.add(rope);
     this.scene.add(group);
-    return { group, legs, arms, head, rope };
+    return { group, torso, legs, arms, head, rope };
   }
 
   private updateSlicks(frame: GameProjection): void {
@@ -287,10 +323,13 @@ export class RaceView {
   private updateCar(rig: CarRig, p: PlayerView): void {
     rig.group.position.set(p.x, p.y, p.z);
     rig.group.quaternion.set(p.qx, p.qy, p.qz, p.qw);
-    rig.legs.visible = p.build.legs;
-    rig.arms.visible = p.build.arms;
-    rig.head.visible = p.build.head;
-    rig.head.children[0]?.scale.setScalar(p.trailing ? 1.25 : 1);
+    rig.legs.forEach((g, i) => g && (g.visible = i === p.build.legs));
+    rig.arms.forEach((g, i) => g && (g.visible = i === p.build.arms));
+    rig.head.forEach((g, i) => g && (g.visible = i === p.build.head));
+    if (p.build.head === 1) rig.head[1]?.children[0]?.scale.setScalar(p.trailing ? 1.25 : 1);
+    // The Bone Rattler is a smaller, paler frame than the Brute.
+    const small = p.build.body === 1;
+    rig.group.scale.setScalar(small ? 0.85 : 1);
     if (p.swingPole >= 0) {
       const pole = this.anchors[p.swingPole];
       if (pole !== undefined) {

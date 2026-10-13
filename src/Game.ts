@@ -4,7 +4,8 @@ import { Controls } from './input/Controls.js';
 import { ensureMap } from './net/mapLoader.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
-import { DEFAULT_INPUT, type Build, type GameProjection } from './sim/game.js';
+import { DEFAULT_BUILD, DEFAULT_INPUT, type Build, type GameProjection } from './sim/game.js';
+import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
 import { DEFAULT_MAP } from './sim/runtime.js';
 
@@ -14,6 +15,7 @@ export type Screen = 'title' | 'connecting' | 'play' | 'error';
 export type Graphics = 'auto' | 'high' | 'medium' | 'low';
 const GRAPHICS_ORDER: readonly Graphics[] = ['auto', 'high', 'medium', 'low'];
 const GRAPHICS_STORAGE_KEY = 'frankenrun.graphics';
+const BUILD_STORAGE_KEY = 'frankenrun.build';
 /** Fixed quality steps for the pinned settings (indices into RaceView.PIXEL_RATIOS). */
 const PINNED_LEVEL: Record<Exclude<Graphics, 'auto'>, number> = { high: 0, medium: 2, low: 3 };
 
@@ -94,7 +96,7 @@ export class Game {
   private errorDetail = '';
   private lastRoom = '';
   private map: MapData | undefined;
-  private build: Build = { legs: true, arms: true, head: true };
+  private build: Build = DEFAULT_BUILD;
   private ready = false;
   private lastNow = 0;
   private lastEmit = 0;
@@ -135,6 +137,7 @@ export class Game {
     });
     this.raf = requestAnimationFrame(this.frame);
     void this.loadGraphics();
+    void this.loadBuild();
   }
 
   subscribe(listener: Listener): () => void {
@@ -334,7 +337,7 @@ export class Game {
     this.watchSync(now);
     this.lastNow = now;
     if (this.screen === 'play') {
-      const base = { ...DEFAULT_INPUT, legsSel: this.build.legs, armsSel: this.build.arms, headSel: this.build.head, ready: this.ready };
+      const base = { ...DEFAULT_INPUT, bodySel: this.build.body, legsSel: this.build.legs, armsSel: this.build.arms, headSel: this.build.head, ready: this.ready };
       this.runner.applyInput(this.controls.read(base));
       const u0 = performance.now();
       this.runner.update(dt);
@@ -458,7 +461,31 @@ export class Game {
 
   setBuild(build: Build): void {
     this.build = build;
+    this.saveBuild();
     this.emit();
+  }
+
+  /** The player's last build is remembered between sessions (spec: saved per player with appStorage). */
+  private async loadBuild(): Promise<void> {
+    try {
+      const saved = await RundotGameAPI.appStorage.getItem(BUILD_STORAGE_KEY);
+      if (!saved) return;
+      const raw = JSON.parse(saved) as Partial<Build>;
+      const within = (value: unknown, count: number): number => (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < count ? value : 0);
+      this.build = {
+        body: within(raw.body, BODIES.length),
+        legs: within(raw.legs, LEG_PARTS.length),
+        arms: within(raw.arms, ARM_PARTS.length),
+        head: within(raw.head, HEAD_PARTS.length),
+      };
+      this.emit();
+    } catch {
+      // No saved build, or storage unavailable: keep the default.
+    }
+  }
+
+  private saveBuild(): void {
+    RundotGameAPI.appStorage.setItem(BUILD_STORAGE_KEY, JSON.stringify(this.build)).catch(() => undefined);
   }
   setReady(ready: boolean): void {
     this.ready = ready;

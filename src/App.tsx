@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type UiState } from './Game';
-import { ARMS, HEADS } from './sim/parts';
-import type { Build } from './sim/game';
+import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts';
+import { ARM_TENTACLES, HEAD_SLIME, buildStats, type Build } from './sim/game';
 import './style.css';
 
 const TICK = 30;
@@ -115,7 +115,8 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
     );
   }
 
-  const toggle = (key: keyof Build) => game.setBuild({ ...ui.build, [key]: !ui.build[key] });
+  const pick = (key: keyof Build, id: number) => game.setBuild({ ...ui.build, [key]: id });
+  const stats = buildStats(ui.build);
   const secs = (t: number) => (t / TICK).toFixed(1);
 
   if (frame.phase === 'BUILD') {
@@ -127,22 +128,44 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             Room code <b>{ui.roomCode}</b> · {ui.occupied}/{ui.maxPlayers} players
           </p>
         )}
-        <div className="slots">
-          <button className={`slot legs ${ui.build.legs ? 'on' : ''}`} disabled={ui.ready} onClick={() => toggle('legs')}>
-            <b>Legs</b>
-            <span>Werewolf Legs</span>
-            <small>Fast on straights, slides in corners</small>
-          </button>
-          <button className={`slot arms ${ui.build.arms ? 'on' : ''}`} disabled={ui.ready} onClick={() => toggle('arms')}>
-            <b>Arms</b>
-            <span>{ARMS.tentacles.name}</span>
-            <small>Grab a pole and swing round it</small>
-          </button>
-          <button className={`slot head ${ui.build.head ? 'on' : ''}`} disabled={ui.ready} onClick={() => toggle('head')}>
-            <b>Head</b>
-            <span>{HEADS.slime.name}</span>
-            <small>Drop a slick trail</small>
-          </button>
+        <div className="build-grid">
+        <div className="pickers">
+        <div className="picker">
+          <b>Body</b>
+          <div className="chips">
+            {BODIES.map((body, i) => (
+              <button key={body.name} className={`chip ${ui.build.body === i ? 'on' : ''}`} disabled={ui.ready} onClick={() => pick('body', i)}>
+                {body.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        {(
+          [
+            ['legs', 'Legs', LEG_PARTS],
+            ['arms', 'Arms', ARM_PARTS],
+            ['head', 'Head', HEAD_PARTS],
+          ] as const
+        ).map(([key, label, parts]) => (
+          <div className={`picker ${key}`} key={key}>
+            <b>{label}</b>
+            <div className="chips">
+              {parts.map((part, i) => (
+                <button key={part.name} className={`chip ${ui.build[key] === i ? 'on' : ''}`} disabled={ui.ready} onClick={() => pick(key, i)}>
+                  {part.name}
+                </button>
+              ))}
+            </div>
+            <small>{parts[ui.build[key]]?.blurb}</small>
+          </div>
+        ))}
+        </div>
+        <div className="side">
+        <div className="stats">
+          <StatBar label="Top speed" value={stats.topKmh} max={110} text={`${stats.topKmh} km/h`} />
+          <StatBar label="Acceleration" value={stats.accel} max={1.7} />
+          <StatBar label="Grip" value={stats.grip} max={1.8} />
+          <StatBar label="Durability" value={stats.hits} max={3} text={`${stats.hits} ${stats.hits === 1 ? 'hit' : 'hits'}`} />
         </div>
         <div className="row">
           <button className="btn primary" onClick={() => game.setReady(!ui.ready)}>
@@ -151,6 +174,8 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           <button className="btn" onClick={() => game.leave()}>
             Leave
           </button>
+        </div>
+        </div>
         </div>
         <p className="muted small">Keys: W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset</p>
       </div>
@@ -186,7 +211,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           <AbilityButton
             label="Tentacles"
             hint="J"
-            on={me.build.arms}
+            on={me.build.arms === ARM_TENTACLES}
             cd={me.armsCooldown}
             active={me.swingPole >= 0}
             onDown={() => game.controls.setTouchArms(true)}
@@ -196,7 +221,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           <AbilityButton
             label="Slime"
             hint="K"
-            on={me.build.head}
+            on={me.build.head === HEAD_SLIME}
             cd={me.headCooldown}
             active={me.trailing}
             onDown={() => game.controls.setTouchHead(true)}
@@ -252,6 +277,18 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         </div>
       )}
     </>
+  );
+}
+
+function StatBar({ label, value, max, text }: { label: string; value: number; max: number; text?: string }) {
+  return (
+    <div className="stat">
+      <span>{label}</span>
+      <div className="bar">
+        <i style={{ width: `${Math.max(4, Math.min(100, (value / max) * 100))}%` }} />
+      </div>
+      <em>{text ?? value.toFixed(1)}</em>
+    </div>
   );
 }
 

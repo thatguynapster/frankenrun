@@ -9,9 +9,10 @@ const codec = defineSyncplayInputCodec<GameInput>({
   legs: { kind: 'boolean' },
   reset: { kind: 'boolean' },
   ready: { kind: 'boolean' },
-  legsSel: { kind: 'boolean', neutral: true },
-  armsSel: { kind: 'boolean', neutral: true },
-  headSel: { kind: 'boolean', neutral: true },
+  bodySel: { kind: 'int', min: 0, max: 7, neutral: 0 },
+  legsSel: { kind: 'int', min: 0, max: 7, neutral: 1 },
+  armsSel: { kind: 'int', min: 0, max: 7, neutral: 1 },
+  headSel: { kind: 'int', min: 0, max: 7, neutral: 1 },
 });
 
 export const encodeInput = codec.encodeInput;

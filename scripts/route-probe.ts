@@ -18,7 +18,7 @@ let progress = [0, 0]; // furthest polyline index reached per player
 const wedged: number[] = [0, 0];
 
 function pilot(slot: number): GameInput {
-  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, legsSel: LEGS, armsSel: false, headSel: false };
+  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0 };
   const v = projectGame(state, prep).players[slot]!;
   // Advance only once the car is actually at the next vertex, so corners are never skipped or cut.
   let best = progress[slot]!;
@@ -61,15 +61,15 @@ function pilot(slot: number): GameInput {
   // Recover when wedged: reverse out with opposite lock for ~1.5 s.
   if (v.speed < 0.4 && state.phase === 'RACING' && (wedged[slot] ?? 0) >= 0) wedged[slot] = (wedged[slot] ?? 0) + 1; else if (v.speed > 2 && (wedged[slot] ?? 0) >= 0) wedged[slot] = 0;
   // Monsters cannot reverse: when wedged, stop and pivot to face the nearest road point, drive there for ~1.5 s, then resume.
-  if ((wedged[slot] ?? 0) < 0) { wedged[slot] = (wedged[slot] ?? 0) + 1; return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 100, steer }; }
+  if ((wedged[slot] ?? 0) < 0) { wedged[slot] = (wedged[slot] ?? 0) + 1; return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 100, steer }; }
   if ((wedged[slot] ?? 0) > 20) {
     const road = polyline[best]!;
     const err2 = Math.atan2(fz * (road.x - v.x) - fx * (road.z - v.z), fx * (road.x - v.x) + fz * (road.z - v.z));
-    if (Math.abs(err2) < 0.3 || (wedged[slot] ?? 0) > 150) { wedged[slot] = -45; return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 100, steer: Math.max(-100, Math.min(100, Math.round(err2 * 160))) }; }
-    return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle: 0, steer: err2 >= 0 ? 100 : -100 };
+    if (Math.abs(err2) < 0.3 || (wedged[slot] ?? 0) > 150) { wedged[slot] = -45; return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 100, steer: Math.max(-100, Math.min(100, Math.round(err2 * 160))) }; }
+    return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle: 0, steer: err2 >= 0 ? 100 : -100 };
   }
   if (process.env['TRACE'] && slot === 0 && state.frame % 30 === 0 && state.frame >= 1100 && state.frame < 1700) console.log(`t${state.frame} pos ${v.x.toFixed(0)},${v.z.toFixed(0)} yaw ${((yaw * 180) / Math.PI).toFixed(0)} tgt ${target.x.toFixed(0)},${target.z.toFixed(0)} err ${((err * 180) / Math.PI).toFixed(0)} steer ${steer} thr ${throttle} spd ${(v.speed * 3.6).toFixed(0)} prog ${best} onRoad ${prep.onRoad(v.x, v.z)} cp ${state.players[slot]!.nextCheckpoint} cpPos ${JSON.stringify(prep.checkpoints[state.players[slot]!.nextCheckpoint] ?? null)}`);
-  return { ...DEFAULT_INPUT, legsSel: LEGS, armsSel: false, headSel: false, throttle, steer };
+  return { ...DEFAULT_INPUT, legsSel: LEGS ? 1 : 0, armsSel: 0, headSel: 0, throttle, steer };
 }
 
 const cpTimes: string[] = [];

@@ -370,3 +370,131 @@ body {
 .gfx2 {
   top: calc(48px + var(--safe-top));
 }
+
+/* Build screen: body and part pickers on the left, stats and ready on the right. */
+.panel.build {
+  justify-content: center;
+  overflow-y: auto;
+  gap: 8px;
+  background: rgba(8, 10, 22, 0.8);
+}
+
+.build-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 280px);
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+@media (max-width: 640px) {
+  .build-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pickers,
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.picker > b {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.8;
+}
+
+.picker > small {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 8px 12px;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chip:active {
+  transform: scale(0.96);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+}
+
+.chip.on {
+  border-color: #ffd23b;
+  background: rgba(255, 210, 59, 0.18);
+}
+
+.picker.legs .chip.on {
+  border-color: #ff9a2e;
+  background: rgba(255, 154, 46, 0.18);
+}
+
+.picker.arms .chip.on {
+  border-color: #b04cff;
+  background: rgba(176, 76, 255, 0.18);
+}
+
+.picker.head .chip.on {
+  border-color: #b6ff3b;
+  background: rgba(182, 255, 59, 0.16);
+}
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat {
+  display: grid;
+  grid-template-columns: 92px 1fr 64px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.stat em {
+  font-style: normal;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat .bar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.stat .bar i {
+  display: block;
+  height: 100%;
+  background: #ffd23b;
+}

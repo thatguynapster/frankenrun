@@ -16,9 +16,10 @@ const fuzz = (random: { nextInt: (min: number, max: number) => number }, _slot: 
   head: random.nextInt(0, 14) === 0,
   legs: random.nextInt(0, 9) === 0,
   reset: random.nextInt(0, 199) === 0,
-  legsSel: random.nextInt(0, 1) === 1,
-  armsSel: true,
-  headSel: true,
+  bodySel: random.nextInt(0, 1),
+  legsSel: random.nextInt(0, 2),
+  armsSel: random.nextInt(0, 2),
+  headSel: random.nextInt(0, 2),
 });
 
 // Drives hard so the cars cross many collision cells (exercises building streaming under rollback).
@@ -29,6 +30,10 @@ const drive = (random: { nextInt: (min: number, max: number) => number }, slot: 
   steer: Math.round(50 * Math.sin((frame + slot * 30) / 40)) + random.nextInt(-10, 10),
   arms: frame % 90 < 8,
   head: frame % 200 < 3,
+  bodySel: slot % 2,
+  legsSel: 1 + (slot % 2),
+  armsSel: 1 + (slot % 2),
+  headSel: 1 + ((slot + 1) % 2),
 });
 
 for (const [mode, inputFuzz, frames] of [['random', fuzz, 900], ['drive', drive, 1500]] as const) {

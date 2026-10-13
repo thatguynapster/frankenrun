@@ -8,9 +8,9 @@ const config = { game: 'frankenrun', map: 'greybox', players: 2, seed: 1, tickRa
 function run(label: string, legs: boolean, steer: number, seconds: number, steerAfter = 0) {
   let state: GameState = createGameState(config, prep);
   const input = (slot: number): GameInput => {
-    if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, legsSel: legs, armsSel: false, headSel: false };
+    if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, legsSel: legs ? 1 : 0, armsSel: 0, headSel: 0 };
     const t = raceStart < 0 ? 0 : (stateFrame - raceStart) / 30;
-    return slot === 0 ? { ...DEFAULT_INPUT, legsSel: legs, throttle: 100, steer: t >= steerAfter ? steer : 0 } : DEFAULT_INPUT;
+    return slot === 0 ? { ...DEFAULT_INPUT, legsSel: legs ? 1 : 0, throttle: 100, steer: t >= steerAfter ? steer : 0 } : DEFAULT_INPUT;
   };
   const samples: string[] = [];
   let raceStart = -1;

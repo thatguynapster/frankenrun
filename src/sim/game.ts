@@ -18,6 +18,7 @@ import {
 } from '@series-inc/rundot-syncplay/creator';
 import {
   ARMS,
+  ARM_PARTS,
   BASE_ACCEL,
   BASE_TOP_SPEED,
   BODIES,
@@ -27,15 +28,14 @@ import {
   FINISH_WINDOW_TICKS,
   GRAVITY_Y,
   HEADS,
-  LEGS,
+  HEAD_PARTS,
+  LEG_PARTS,
   MASS_UNIT,
   RESET_FREEZE_TICKS,
   RESET_HOLD_TICKS,
-  OFF_ROAD_DRIVE_MUL,
   RIDE_HEIGHT,
   STEER_FADE_SPEED,
   PIVOT_SPEED,
-  CORNER_DRIVE_BOOST,
   PIVOT_MIN_STEER,
   PIVOT_TORQUE,
   STEER_MIN_SCALE,
@@ -55,9 +55,10 @@ export interface GameInput {
   readonly legs: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
-  readonly legsSel: boolean; // equip Werewolf Legs
-  readonly armsSel: boolean; // equip Tentacles
-  readonly headSel: boolean; // equip Slime Gland
+  readonly bodySel: number; // index into BODIES
+  readonly legsSel: number; // 0 none, else index into LEG_PARTS
+  readonly armsSel: number; // 0 none, else index into ARM_PARTS
+  readonly headSel: number; // 0 none, else index into HEAD_PARTS
 }
 
 export const DEFAULT_INPUT: GameInput = {
@@ -68,16 +69,21 @@ export const DEFAULT_INPUT: GameInput = {
   legs: false,
   reset: false,
   ready: false,
-  legsSel: true,
-  armsSel: true,
-  headSel: true,
+  bodySel: 0,
+  legsSel: 1,
+  armsSel: 1,
+  headSel: 1,
 };
 
+/** A monster: a body and one part id per slot (0 = empty slot). */
 export interface Build {
-  readonly legs: boolean;
-  readonly arms: boolean;
-  readonly head: boolean;
+  readonly body: number;
+  readonly legs: number;
+  readonly arms: number;
+  readonly head: number;
 }
+
+export const DEFAULT_BUILD: Build = { body: 0, legs: 1, arms: 1, head: 1 };
 
 export interface Swing {
   readonly pole: number;
@@ -172,6 +178,8 @@ const carId = (slot: number): string => `car-${slot}`;
 const ropeId = (slot: number): string => `rope-${slot}`;
 
 const PIVOT_SPEED_SIGN = -1;
+export const ARM_TENTACLES = 1;
+export const HEAD_SLIME = 1;
 
 const clampInt = (value: number, lo: number, hi: number): number => {
   const v = Math.round(value);
@@ -186,11 +194,17 @@ function steerScale(vx: number, vz: number): number {
 }
 
 function legsOf(build: Build): LegsDef {
-  return build.legs ? LEGS.werewolf : LEGS.none;
+  return LEG_PARTS[build.legs] ?? LEG_PARTS[0]!;
+}
+
+/** Total mass multiplier: body plus the weight of its parts. */
+export function massOf(build: Build): number {
+  const body = BODIES[build.body] ?? BODIES[0]!;
+  return body.mass + legsOf(build).mass + (ARM_PARTS[build.arms]?.mass ?? 0) + (HEAD_PARTS[build.head]?.mass ?? 0);
 }
 
 function chassisBody(slot: number, build: Build, x: number, z: number, yaw: number): DeterministicPhysicsBody3D {
-  const body = BODIES[0]!;
+  const body = BODIES[build.body] ?? BODIES[0]!;
   const legs = legsOf(build);
   const drive = BASE_ACCEL * body.accel * legs.driveMul;
   const topPerTick = (BASE_TOP_SPEED * legs.topSpeedMul) / 30;
@@ -204,7 +218,7 @@ function chassisBody(slot: number, build: Build, x: number, z: number, yaw: numb
     vx: 0,
     vy: 0,
     vz: 0,
-    mass: MASS_UNIT * body.mass,
+    mass: MASS_UNIT * massOf(build),
     // Linear damping is a per-tick velocity retention factor: top speed = accel / (1 - retention).
     linearDamping: 1 - drive / topPerTick,
     angularDamping: 0.93,
@@ -234,10 +248,10 @@ function wheel(x: number, z: number, steered: boolean, grip: number, massRatio: 
 }
 
 function vehicleFor(slot: number, build: Build, gripMul: number, driveMul: number): DeterministicVehicle3D {
-  const body = BODIES[0]!;
+  const body = BODIES[build.body] ?? BODIES[0]!;
   const legs = legsOf(build);
   const grip = legs.gripMul * gripMul * body.turn;
-  const massRatio = body.mass;
+  const massRatio = massOf(build);
   const wx = CHASSIS_HALF.x - 0.05;
   const wz = CHASSIS_HALF.z - 0.2;
   return {
@@ -256,7 +270,7 @@ function vehicleFor(slot: number, build: Build, gripMul: number, driveMul: numbe
 function newPlayer(slot: number): PlayerState {
   return {
     slot,
-    build: { legs: true, arms: true, head: true },
+    build: DEFAULT_BUILD,
     ready: false,
     nextCheckpoint: 0,
     finishTick: -1,
@@ -293,6 +307,10 @@ function normaliseInput(input: GameInput | undefined): GameInput {
     ...input,
     throttle: clampInt(input.throttle, -100, 100),
     steer: clampInt(input.steer, -100, 100),
+    bodySel: clampInt(input.bodySel, 0, BODIES.length - 1),
+    legsSel: clampInt(input.legsSel, 0, LEG_PARTS.length - 1),
+    armsSel: clampInt(input.armsSel, 0, ARM_PARTS.length - 1),
+    headSel: clampInt(input.headSel, 0, HEAD_PARTS.length - 1),
   };
 }
 
@@ -366,7 +384,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   if (phase === 'BUILD') {
     players = players.map((p, i) => {
       const input = inputs[i]!;
-      return { ...p, ready: input.ready, build: { legs: input.legsSel, arms: input.armsSel, head: input.headSel } };
+      return { ...p, ready: input.ready, build: { body: input.bodySel, legs: input.legsSel, arms: input.armsSel, head: input.headSel } };
     });
     if (players.length > 0 && players.every((p) => p.ready)) {
       world = applyDeterministicWorldEdit3D(world, {
@@ -411,7 +429,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const frozen = !racing || frame < p.frozenUntil;
 
       if (racing && !frozen) {
-        if (p.build.arms && swing === null && armsEdge && armsCooldown === 0) {
+        if (p.build.arms === ARM_TENTACLES && swing === null && armsEdge && armsCooldown === 0) {
           const hit = nearestAnchor(prep, body.x, body.z, ARMS.tentacles.grabRange);
           if (hit !== null) {
             swing = { pole: hit.index, maxLength: Math.max(hit.distance, 2), ticksLeft: ARMS.tentacles.swingTicks };
@@ -429,7 +447,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
           }
         }
 
-        if (p.build.head && headEdge && headCooldown === 0 && trailLeft === 0) {
+        if (p.build.head === HEAD_SLIME && headEdge && headCooldown === 0 && trailLeft === 0) {
           trailLeft = HEADS.slime.trailTicks;
           headCooldown = HEADS.slime.cooldownTicks;
         }
@@ -482,9 +500,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       // --- vehicle controls ---
       const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
       const gripMul = slickGripMul(state.slicks, body.x, body.z);
-      // Cornering scrubs speed, so steering adds drive to compensate (turning should not feel like braking).
-      const cornerBoost = 1 + CORNER_DRIVE_BOOST * (Math.abs(input.steer) / 100);
-      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : OFF_ROAD_DRIVE_MUL) * cornerBoost);
+      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul));
       // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
       // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
       const speedMs = Math.hypot(body.vx, body.vz) * TICK_RATE;
@@ -598,5 +614,18 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
     slicks: state.slicks,
     finishOrder: state.finishOrder,
     activeCells: state.activeCells,
+  };
+}
+
+/** Readable stats for a build (build screen bars). Same formulas the vehicle uses. */
+export function buildStats(build: Build): { topKmh: number; accel: number; grip: number; mass: number; hits: number } {
+  const body = BODIES[build.body] ?? BODIES[0]!;
+  const legs = legsOf(build);
+  return {
+    topKmh: Math.round(BASE_TOP_SPEED * legs.topSpeedMul * 3.6),
+    accel: body.accel * legs.driveMul,
+    grip: (body.turn / BODIES[0]!.turn) * legs.gripMul,
+    mass: massOf(build),
+    hits: body.hitsToLose,
   };
 }
