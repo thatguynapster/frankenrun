@@ -158,3 +158,7 @@ export const MISSING_SLOT_SPEED = 0.05;
 // and facing it, and can steal again only after the cooldown.
 export const CLAW_REAR_COS = 0.5;
 export const CLAW_COOLDOWN_TICKS = seconds(2);
+
+// Lobby: a player counts as being in the room while their client keeps announcing itself; after this long without
+// hearing from them they are treated as gone (so a ghost can never block the host from starting).
+export const PRESENCE_TIMEOUT_TICKS = seconds(6);

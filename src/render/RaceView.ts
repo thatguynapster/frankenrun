@@ -5,7 +5,7 @@ import type { MapData } from '../sim/mapdata.js';
 import { getPreparedMap, type PreparedMap } from '../sim/world.js';
 import { CHASSIS_HALF, CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
 
-const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf];
+const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf, 0x5a6fbf, 0xbf5a5a]; // one per slot, up to 10
 const LEGS_COLOR = 0xff9a2e;
 const ARMS_COLOR = 0xb04cff;
 const HEAD_COLOR = 0xb6ff3b;
@@ -355,7 +355,9 @@ export class RaceView {
     });
   }
 
-  private updateCar(rig: CarRig, p: PlayerView): void {
+  private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase']): void {
+    // A monster is drawn while it has a body in the world, and as a build preview on the start grid while in the lobby.
+    rig.group.visible = p.present || (phase === 'BUILD' && p.joined);
     rig.group.position.set(p.x, p.y, p.z);
     rig.group.quaternion.set(p.qx, p.qy, p.qz, p.qw);
     rig.legs.forEach((g, i) => g && (g.visible = i === p.build.legs));
@@ -530,12 +532,14 @@ export class RaceView {
       while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
       frame.players.forEach((p, i) => {
         const rig = this.cars[i];
-        if (rig !== undefined) this.updateCar(rig, p);
+        if (rig !== undefined) this.updateCar(rig, p, frame.phase);
       });
       this.updateSlicks(frame);
       this.updatePickups(frame, frame.frame / 30);
-      const local = frame.players[localSlot] ?? frame.players[0];
-      this.updateLantern(frame, local, frame.frame / 30);
+      // A player with no monster in this race (late joiner, or left out of it) watches the race leader.
+      const own = frame.players[localSlot] ?? frame.players[0];
+      const local = own !== undefined && own.present ? own : (frame.players.filter((p) => p.present && !p.bot).sort((a, b) => b.nextCheckpoint - a.nextCheckpoint)[0] ?? own);
+      this.updateLantern(frame, own !== undefined && own.present ? own : undefined, frame.frame / 30);
       this.updateCamera(local, dtSeconds);
       const next = local === undefined ? 0 : local.nextCheckpoint;
       this.rings.forEach((ring, i) => {

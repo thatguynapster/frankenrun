@@ -17,13 +17,14 @@ import {
   type SessionConfig,
 } from './game.js';
 import type { MapData } from './mapdata.js';
+import { MAX_PLAYERS } from './limits.js';
 import { getPreparedMap, registerMap } from './world.js';
 
 export { runtimeIdentity };
 
 /** Map used by public matchmaking and the default private rooms. */
 export const DEFAULT_MAP = 'route1';
-export const PLAYERS = 2; // M1/M2: fixed two-player rooms
+export { MAX_PLAYERS };
 
 export interface EncodedSessionConfig {
   readonly config: SessionConfig;
@@ -32,8 +33,8 @@ export interface EncodedSessionConfig {
 }
 
 /** The session config is part of the room's identity: same map, same players, same tick rate. */
-export function makeSessionConfig(map: string): EncodedSessionConfig {
-  const config: SessionConfig = Object.freeze({ game: 'frankenrun', map, players: PLAYERS, seed: 1, tickRateHz: 30, version: 1 });
+export function makeSessionConfig(map: string, bots = 0, players = MAX_PLAYERS): EncodedSessionConfig {
+  const config: SessionConfig = Object.freeze({ game: 'frankenrun', map, players, bots, seed: 1, tickRateHz: 30, version: 1 });
   const bytes = new TextEncoder().encode(JSON.stringify(config));
   return { config, bytes, digest: kinetixSessionConfigDigest(bytes) };
 }
@@ -43,10 +44,14 @@ function parseSessionConfig(bytes: Uint8Array): SessionConfig {
   if (
     value.game !== 'frankenrun' ||
     typeof value.map !== 'string' ||
-    value.players !== PLAYERS ||
+    typeof value.players !== 'number' ||
+    !Number.isInteger(value.players) ||
+    value.players < 2 ||
+    value.players > MAX_PLAYERS ||
     value.tickRateHz !== 30 ||
     value.version !== 1 ||
-    typeof value.seed !== 'number'
+    typeof value.seed !== 'number' ||
+    (value.bots !== undefined && (!Number.isInteger(value.bots) || value.bots < 0 || value.bots >= value.players))
   ) {
     throw new Error('FRANKENRUN_CONFIG_INVALID');
   }

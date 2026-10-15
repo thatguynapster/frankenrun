@@ -4,9 +4,9 @@
       "type": "deterministic",
       "deterministic": true,
       "config": {
-        "maxPlayers": 2,
+        "maxPlayers": 4,
         "tickRateHz": 30,
-        "reconnectTimeout": 10
+        "reconnectTimeout": 30
       }
     }
   ]

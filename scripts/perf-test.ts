@@ -8,7 +8,7 @@ const mapId = process.env['MAP'] ?? 'route1';
 const prep = getPreparedMap(mapId);
 const config = { game: 'frankenrun', map: mapId, players: 2, seed: 1, tickRateHz: 30, version: 1 };
 let state: GameState = createGameState(config, prep);
-const input = (): GameInput => (state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true } : { ...DEFAULT_INPUT, throttle: 100, steer: 20 });
+const input = (): GameInput => (state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true } : { ...DEFAULT_INPUT, throttle: 100, steer: 20 });
 const times: number[] = [];
 const frames = Number(process.env['FRAMES'] ?? 600);
 for (let f = 0; f < frames; f += 1) {

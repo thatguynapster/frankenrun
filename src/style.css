@@ -373,10 +373,19 @@ body {
 
 /* Build screen: body and part pickers on the left, stats and ready on the right. */
 .panel.build {
-  justify-content: center;
+  /* Centred when it fits, scrolling from the top when it does not (plain centring would clip the title). */
+  justify-content: flex-start;
   overflow-y: auto;
   gap: 8px;
   background: rgba(8, 10, 22, 0.8);
+}
+
+.panel.build > :first-child {
+  margin-top: auto;
+}
+
+.panel.build > :last-child {
+  margin-bottom: auto;
 }
 
 .build-grid {
@@ -550,4 +559,73 @@ body {
 @keyframes part-lost {
   0% { transform: scale(1.3); }
   100% { transform: scale(1); }
+}
+
+/* First-time tips: a small card near the top centre, tap to dismiss. */
+.tip {
+  position: absolute;
+  top: calc(96px + var(--safe-top));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(520px, calc(100% - 200px));
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #fff;
+  background: rgba(8, 10, 22, 0.82);
+  border: 2px solid #ffd23b;
+  border-radius: 10px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: tip-in 0.25s ease-out;
+}
+
+.tip small {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.55;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.tip:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+@keyframes tip-in {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  100% { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Lobby: who is in the room and what they are doing. */
+.lobby-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.lobby-player {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lobby-player.ready {
+  border-color: #6fe07a;
+  background: rgba(111, 224, 122, 0.16);
+}
+
+.lobby-player.away {
+  opacity: 0.55;
+  border-style: dashed;
 }

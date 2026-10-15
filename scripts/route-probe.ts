@@ -23,7 +23,7 @@ const turnSign: number[] = [0, 0];
 const recovery = [0, 1].map(() => ({ count: 0, pivoting: false, drive: 0, ticks: 0, px: 0, pz: 0 }));
 
 function pilot(slot: number): GameInput {
-  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD };
+  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, present: true, start: true, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD };
   const v = projectGame(state, prep).players[slot]!;
   // Advance only once the car is actually at the next vertex, so corners are never skipped or cut.
   let best = progress[slot]!;
@@ -106,7 +106,7 @@ let winMs = 0, winN = 0;
 const frames = 30 * Number(process.env['SECS'] ?? 300);
 for (let f = 0; f < frames; f += 1) {
   const t0 = performance.now();
-  state = stepGame(state, [pilot(0), state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true } : DEFAULT_INPUT], prep);
+  state = stepGame(state, [pilot(0), state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true } : DEFAULT_INPUT], prep);
   const ms = performance.now() - t0;
   maxMs = Math.max(maxMs, ms);
   if (f > 5) { sumMs += ms; nTicks += 1; allMs.push(ms); }

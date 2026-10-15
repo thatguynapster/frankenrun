@@ -10,6 +10,6 @@ console.log('slot0', prep.startPose(0), 'slot1', prep.startPose(1), 'cp1', prep.
 const cfg = { game: 'frankenrun', map: 'route1', players: 2, seed: 1, tickRateHz: 30, version: 1 };
 let state: GameState = createGameState(cfg, prep);
 for (let f = 0; f < 90 + 30 * 8; f++) {
-  state = stepGame(state, [{ ...DEFAULT_INPUT, ready: state.phase === 'BUILD', throttle: 100 }, { ...DEFAULT_INPUT, ready: state.phase === 'BUILD' }], prep);
+  state = stepGame(state, [{ ...DEFAULT_INPUT, ready: state.phase === 'BUILD', present: true, start: state.phase === 'BUILD', throttle: 100 }, { ...DEFAULT_INPUT, ready: state.phase === 'BUILD', present: true, start: state.phase === 'BUILD' }], prep);
   if (f % 30 === 0 && f > 80) { const v = projectGame(state, prep).players[0]!; console.log(f, state.phase, `pos ${v.x.toFixed(1)},${v.z.toFixed(1)} y ${v.y.toFixed(2)} speed ${(v.speed * 3.6).toFixed(0)} cells ${state.activeCells.length}`); }
 }

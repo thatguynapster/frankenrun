@@ -9,7 +9,8 @@ export class Controls {
   private touchHead = false;
   private touchLegs = false;
   private touchReset = false;
-  private touchActive = false;
+  // A phone or tablet (coarse primary pointer) drives automatically from the start; keyboards need W.
+  private touchActive = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
   private steerSmoothed = 0; // keyboard steering eases in so a tap doesn't snap to full lock
 
   constructor(target: Window = window) {

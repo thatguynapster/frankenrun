@@ -10,7 +10,7 @@ for (const body of [0, 1]) for (const legs of [0, 1, 2]) for (const arms of [0, 
   const t0 = Date.now();
   for (let f = 0; f < 90 + 150; f++) {
     const input = (slot: number): GameInput =>
-      state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, bodySel: body, legsSel: legs, armsSel: arms, headSel: head } : slot === 0 ? { ...DEFAULT_INPUT, throttle: 100 } : DEFAULT_INPUT;
+      state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true, bodySel: body, legsSel: legs, armsSel: arms, headSel: head } : slot === 0 ? { ...DEFAULT_INPUT, throttle: 100 } : DEFAULT_INPUT;
     state = stepGame(state, [input(0), input(1)], prep);
   }
   const p = projectGame(state, prep).players[0]!;

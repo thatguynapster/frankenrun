@@ -10,7 +10,7 @@ function run(label: string, steer: number, throttle: number) {
   for (let f = 0; f < 90 + 1 * 30 + 5; f++) {
     const racing = state.phase === 'RACING';
     const input = (slot: number): GameInput =>
-      state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, legsSel: 1 } : slot === 0 && racing ? { ...DEFAULT_INPUT, legsSel: 1, throttle, steer } : DEFAULT_INPUT;
+      state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true, legsSel: 1 } : slot === 0 && racing ? { ...DEFAULT_INPUT, legsSel: 1, throttle, steer } : DEFAULT_INPUT;
     state = stepGame(state, [input(0), input(1)], prep);
     if (state.phase === 'RACING' && raceStart < 0) { raceStart = f; const p = projectGame(state, prep).players[0]!; yaw0 = 2 * Math.atan2(p.qy, p.qw); }
   }

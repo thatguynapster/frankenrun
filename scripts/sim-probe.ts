@@ -6,7 +6,7 @@ const prep = getPreparedMap('greybox');
 const config = { game: 'frankenrun', map: 'greybox', players: 2, seed: 1, tickRateHz: 30, version: 1 };
 const pilot = (state: GameState, slot: number, useAbilities: boolean): GameInput => {
   const view = projectGame(state, prep).players[slot]!;
-  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true };
+  if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, present: true, start: true };
   const target = CHECKPOINTS[Math.min(view.nextCheckpoint, CHECKPOINTS.length - 1)]!;
   // forward vector from quaternion (yaw only approx)
   const yaw = 2 * Math.atan2(view.qy, view.qw);

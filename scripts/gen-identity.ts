@@ -5,9 +5,10 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { deriveCustomRuntimeIdentity, kinetixRuntimeModuleManifest } from '@series-inc/rundot-syncplay/core';
 import { describeKinetixAuxiliaryAsset } from '@series-inc/rundot-syncplay/core/runtime';
+import { MAX_PLAYERS } from '../src/sim/limits.ts';
 
 // The generated file must NOT appear in its own module list.
-const RUNTIME_MODULES = ['sim/game.ts', 'sim/parts.ts', 'sim/track.ts', 'sim/world.ts', 'sim/mapdata.ts', 'sim/runtime.ts', 'sim/input-codec.ts'];
+const RUNTIME_MODULES = ['sim/limits.ts', 'sim/game.ts', 'sim/parts.ts', 'sim/track.ts', 'sim/world.ts', 'sim/mapdata.ts', 'sim/runtime.ts', 'sim/input-codec.ts'];
 
 // Baked maps are pinned into the identity by digest, so a client with a different map can't join a room.
 const MAP_DIR = 'public/cdn-assets/accra';
@@ -38,4 +39,11 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = ${JSON.stringif
 export const mapAssets: readonly { name: string; digest: string; byteLength: number }[] = ${JSON.stringify(auxiliaryAssets, null, 2)};
 `;
 writeFileSync('src/sim/identity.generated.ts', out);
+
+// The room config is plain JSON the multiplayer build plugin reads, so the player limit is written into it from
+// src/sim/limits.ts here: change MAX_PLAYERS and re-run this script, never edit the number by hand.
+const roomsPath = 'rundot/realtime.config.json';
+const rooms = JSON.parse(readFileSync(roomsPath, 'utf8')) as { rooms: { config: { maxPlayers: number } }[] };
+for (const room of rooms.rooms) room.config.maxPlayers = MAX_PLAYERS;
+writeFileSync(roomsPath, `${JSON.stringify(rooms, null, 2)}\n`);
 console.log(`identity generated (syncplay ${syncplayVersion}), modules: ${RUNTIME_MODULES.length}, maps: ${auxiliaryAssets.map((a) => a.name).join(', ') || 'none'}`);

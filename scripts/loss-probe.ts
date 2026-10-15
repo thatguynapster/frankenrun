@@ -24,7 +24,7 @@ function scenario(label: string, bodies: [number, number], ram: boolean, seconds
   for (let f = 0; f < 90 + 30 * seconds; f++) {
     const view = state.phase === 'BUILD' ? undefined : projectGame(state, prep);
     const input = (slot: number): GameInput => {
-      if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, bodySel: bodies[slot]!, legsSel: 1, armsSel: 1, headSel: 1 };
+      if (state.phase === 'BUILD') return { ...DEFAULT_INPUT, ready: true, present: true, start: true, bodySel: bodies[slot]!, legsSel: 1, armsSel: 1, headSel: 1 };
       if (!view) return DEFAULT_INPUT;
       const me = view.players[slot]!, other = view.players[1 - slot]!;
       // Both monsters drive off in a straight line for a while (a run-up), then charge each other.
@@ -64,7 +64,7 @@ function claws(label: string, attackerBehind: boolean, armsFull: boolean, emptyA
   for (let f = 0; f < 90 + 30 * 8; f++) {
     const input = (slot: number): GameInput =>
       state.phase === 'BUILD'
-        ? { ...DEFAULT_INPUT, ready: true, bodySel: 0, legsSel: emptyAttacker && slot === 0 ? 0 : 1, armsSel: slot === 0 ? 2 : armsFull ? 2 : 1, headSel: emptyAttacker && slot === 0 ? 0 : 1 }
+        ? { ...DEFAULT_INPUT, ready: true, present: true, start: true, bodySel: 0, legsSel: emptyAttacker && slot === 0 ? 0 : 1, armsSel: slot === 0 ? 2 : armsFull ? 2 : 1, headSel: emptyAttacker && slot === 0 ? 0 : 1 }
         : slot === 0 ? { ...DEFAULT_INPUT, throttle: 100 } : DEFAULT_INPUT;
     state = stepGame(state, [input(0), input(1)], prep);
     if (state.phase === 'RACING' && !placed) {

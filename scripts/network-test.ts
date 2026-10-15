@@ -1,5 +1,6 @@
 // Two simulated clients through the real authority room, with latency/jitter and rollback; then a late joiner.
 // Proves the networked path converges on identical checksums:  npm run test:network
+import { MAX_PLAYERS } from '../src/sim/limits.ts';
 import { assertLateJoinHydration, assertTwoClientConvergence } from '@series-inc/rundot-syncplay/testing';
 import { encodeInput, decodeInput } from '../src/sim/input-codec.ts';
 import { DEFAULT_INPUT, type GameInput } from '../src/sim/game.ts';
@@ -14,6 +15,8 @@ const q = (v: number): number => Math.round(v / Q) * Q;
 const driver = (slot: number, tick: number): GameInput => ({
   ...DEFAULT_INPUT,
   ready: tick > 5,
+  present: true,
+  start: tick > 5,
   throttle: 100,
   steer: q(Math.round(60 * Math.sin((tick + slot * 40) / 25))),
   arms: tick % 70 < 12,
@@ -23,7 +26,7 @@ const driver = (slot: number, tick: number): GameInput => ({
 });
 
 const roomConfig = {
-  playerCount: 2,
+  playerCount: MAX_PLAYERS, // a real room's simulation slots equal its player limit; two clients occupy slots 0 and 1
   seed: 1,
   hardToleranceTicks: 12,
   tickRateHz: 30,

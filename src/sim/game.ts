@@ -34,6 +34,7 @@ import {
   HIT_COOLDOWN_TICKS,
   HIT_MIN_CLOSING_MS,
   LEG_PARTS,
+  PRESENCE_TIMEOUT_TICKS,
   MISSING_SLOT_MASS,
   MISSING_SLOT_SPEED,
   PICKUP_ARM_TICKS,
@@ -67,6 +68,12 @@ export interface GameInput {
   readonly legs: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
+  /** Always true from a connected client: announces that this slot is occupied (an empty slot sends the neutral input). */
+  readonly present: boolean;
+  /** Host only: start the race (needs 2+ players in the lobby, all of them ready). */
+  readonly start: boolean;
+  /** Results screen (or a race you are not in): this player goes to the lobby for the next race. */
+  readonly rematch: boolean;
   readonly bodySel: number; // index into BODIES
   readonly legsSel: number; // 0 none, else index into LEG_PARTS
   readonly armsSel: number; // 0 none, else index into ARM_PARTS
@@ -81,6 +88,9 @@ export const DEFAULT_INPUT: GameInput = {
   legs: false,
   reset: false,
   ready: false,
+  present: false,
+  start: false,
+  rematch: false,
   bodySel: 0,
   legsSel: 1,
   armsSel: 1,
@@ -127,6 +137,12 @@ export interface PlayerState {
   readonly partsStolen: number;
   readonly clawCooldownUntil: number;
   readonly lastLossTick: number;
+  /** Latched on the results screen: this player left the results for the build screen. */
+  readonly rematch: boolean;
+  /** Frame this player's client was last heard from (presence). */
+  readonly lastSeen: number;
+  /** True for the monsters in the current race; players who are not (late joiners, or still on the results) only watch. */
+  readonly inRace: boolean;
 }
 
 export type SlotKey = 'legs' | 'arms' | 'head';
@@ -164,6 +180,10 @@ export interface GameState {
   readonly pickups: readonly Pickup[];
   readonly nextPickupId: number;
   readonly seed: number;
+  /** Number of bot slots (the last ones). The race ends when every human has finished. */
+  readonly bots: number;
+  /** Frame the race started on (finish times are measured from here). */
+  readonly raceStart: number;
   readonly finishOrder: readonly number[];
   /** Sorted collision cells whose building colliders are currently loaded in the physics world. */
   readonly activeCells: readonly number[];
@@ -174,6 +194,8 @@ export interface SessionConfig {
   /** Id of the map this room races on (a baked route, or 'greybox'). */
   readonly map: string;
   readonly players: number;
+  /** Bot slots at the end of the roster (practice); 0 in a real room. */
+  readonly bots?: number;
   readonly seed: number;
   readonly tickRateHz: number;
   readonly version: number;
@@ -184,6 +206,11 @@ export interface PlayerView {
   readonly build: Build;
   readonly ready: boolean;
   readonly present: boolean;
+  /** The player's client is in the room (or it is a bot). */
+  readonly joined: boolean;
+  readonly inRace: boolean;
+  readonly host: boolean;
+  readonly bot: boolean;
   readonly x: number;
   readonly y: number;
   readonly z: number;
@@ -202,12 +229,17 @@ export interface PlayerView {
   readonly partsGained: number;
   readonly partsStolen: number;
   readonly lastLossTick: number;
+  readonly rematch: boolean;
 }
 
 export interface GameProjection {
   readonly frame: number;
   readonly phase: Phase;
   readonly phaseTicks: number; // ticks elapsed in the current phase
+  /** Frame the race started on; a finish time is finishTick - raceStart. */
+  readonly raceStart: number;
+  /** Slot of the host (the room's creator while they are present), or -1. */
+  readonly hostSlot: number;
   readonly players: readonly PlayerView[];
   readonly slicks: readonly Slick[];
   readonly pickups: readonly Pickup[];
@@ -227,6 +259,7 @@ const PIVOT_SPEED_SIGN = -1;
 export const ARM_TENTACLES = 1;
 export const ARM_CLAWS = 2;
 export const HEAD_SLIME = 1;
+export const HEAD_LANTERN = 2;
 
 const clampInt = (value: number, lo: number, hi: number): number => {
   const v = Math.round(value);
@@ -349,6 +382,9 @@ function newPlayer(slot: number): PlayerState {
     partsStolen: 0,
     clawCooldownUntil: 0,
     lastLossTick: -1000,
+    rematch: false,
+    lastSeen: -100000,
+    inRace: false,
   };
 }
 
@@ -365,6 +401,8 @@ export function createGameState(config: SessionConfig, prep: PreparedMap): GameS
     pickups: [],
     nextPickupId: 1,
     seed: config.seed,
+    bots: config.bots ?? 0,
+    raceStart: 0,
     finishOrder: [],
     activeCells: [],
   };
@@ -456,35 +494,113 @@ function retuned(existing: DeterministicPhysicsBody3D, slot: number, build: Buil
   return { ...existing, mass: fresh.mass, linearDamping: fresh.linearDamping };
 }
 
+/** Rematch: back to the build phase in the same room (fresh world, same map and seed, nothing carried over). */
+function restartState(state: GameState, frame: number, prep: PreparedMap): GameState {
+  return {
+    ...state,
+    frame,
+    phase: 'BUILD',
+    phaseStart: frame,
+    physics: createDeterministicPhysicsWorld3D(prep.staticBodies),
+    // Everyone is back at the build screen; a player who had already readied up stays ready.
+    players: state.players.map((p) => ({ ...newPlayer(p.slot), build: p.build, ready: p.ready, lastSeen: p.lastSeen })),
+    slicks: [],
+    pickups: [],
+    nextPickupId: 1,
+    finishOrder: [],
+    activeCells: [],
+    raceStart: 0,
+  };
+}
+
+const buildOf = (input: GameInput): Build => ({ body: input.bodySel, legs: input.legsSel, arms: input.armsSel, head: input.headSel });
+
+/** True while a player is in the room: bots always, humans while their client keeps announcing itself. */
+function isHere(p: PlayerState, frame: number, humans: number): boolean {
+  return p.slot >= humans || frame - p.lastSeen < PRESENCE_TIMEOUT_TICKS;
+}
+
+/** The host is the room's creator (slot 0, the first to join) while they are present, else the lowest present human. */
+function hostSlotOf(players: readonly PlayerState[], frame: number, humans: number): number {
+  for (const p of players) if (p.slot < humans && isHere(p, frame, humans)) return p.slot;
+  return -1;
+}
+
+/** The host may start once at least 2 players (bots count) are in the lobby and every other human there is ready. */
+function canStartRace(lobby: readonly PlayerState[], hostSlot: number, humans: number): boolean {
+  return lobby.length >= 2 && lobby.some((p) => p.slot === hostSlot) && lobby.every((p) => p.slot === hostSlot || p.slot >= humans || p.ready);
+}
+
+/** Puts the given slots on the start grid (in order) and begins the countdown. Everyone else watches. */
+function beginRace(s: GameState, frame: number, prep: PreparedMap, participants: readonly number[]): GameState {
+  const physics = applyDeterministicWorldEdit3D(s.physics, {
+    add: participants.map((slot, rank) => {
+      const pose = prep.startPose(rank);
+      return chassisBody(slot, s.players[slot]!.build, pose.x, pose.z, prep.startYaw);
+    }),
+  });
+  return {
+    ...s,
+    frame,
+    phase: 'COUNTDOWN',
+    phaseStart: frame,
+    physics,
+    players: s.players.map((p) => ({ ...p, inRace: participants.includes(p.slot), rematch: false })),
+  };
+}
+
 export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
   const frame = state.frame + 1;
   const inputs = state.players.map((p) => normaliseInput(rawInputs[p.slot]));
+  const humans = state.players.length - state.bots;
+  // Presence: a connected client announces itself every tick; an empty slot sends the neutral input.
+  const seen = state.players.map((p, i) => (i < humans && inputs[i]!.present ? { ...p, lastSeen: frame } : p));
+  const here = (p: PlayerState): boolean => isHere(p, frame, humans);
+  const hostSlot = hostSlotOf(seen, frame, humans);
+  const startPressed = hostSlot >= 0 && inputs[hostSlot]!.start;
+
+  // Back to the lobby is each player's own choice: pressing Rematch (on the results, or while a race they are not in is
+  // running) moves only that player to the build screen; their build and ready flag follow their input from then on.
+  let basePlayers = seen;
+  if (state.phase !== 'BUILD') {
+    basePlayers = seen.map((p, i) => {
+      if (i >= humans || !here(p)) return p;
+      const input = inputs[i]!;
+      const mayLatch = state.phase === 'RESULTS' || !p.inRace;
+      if (!mayLatch || !(p.rematch || input.rematch)) return p;
+      return { ...p, rematch: true, ready: input.ready, build: buildOf(input) };
+    });
+  }
+  if (state.phase === 'RESULTS') {
+    const presentHumans = basePlayers.filter((p) => p.slot < humans && here(p));
+    // Everyone who is here has come back: a fresh build phase for the whole room.
+    if (presentHumans.length > 0 && presentHumans.every((p) => p.rematch)) return restartState({ ...state, players: basePlayers }, frame, prep);
+    // The host does not have to wait for stragglers: start for those who are already in the lobby.
+    const lobby = basePlayers.filter((p) => p.slot >= humans || (here(p) && p.rematch));
+    if (startPressed && canStartRace(lobby, hostSlot, humans)) {
+      const fresh = restartState({ ...state, players: basePlayers }, frame, prep);
+      return beginRace(fresh, frame, prep, lobby.map((p) => p.slot));
+    }
+  }
   let world = state.physics;
-  let players = state.players;
+  let players = basePlayers;
   let slicks = state.slicks;
   let phase = state.phase;
   let phaseStart = state.phaseStart;
   let finishOrder = state.finishOrder;
   let activeCells = state.activeCells;
+  let raceStart = state.raceStart;
 
   if (phase === 'BUILD') {
-    players = players.map((p, i) => {
-      const input = inputs[i]!;
-      return { ...p, ready: input.ready, build: { body: input.bodySel, legs: input.legsSel, arms: input.armsSel, head: input.headSel } };
-    });
-    if (players.length > 0 && players.every((p) => p.ready)) {
-      world = applyDeterministicWorldEdit3D(world, {
-        add: players.map((p) => {
-          const pose = prep.startPose(p.slot);
-          return chassisBody(p.slot, p.build, pose.x, pose.z, prep.startYaw);
-        }),
-      });
-      phase = 'COUNTDOWN';
-      phaseStart = frame;
+    players = players.map((p, i) => (here(p) ? { ...p, ready: inputs[i]!.ready, build: buildOf(inputs[i]!) } : p));
+    const lobby = players.filter(here);
+    if (startPressed && canStartRace(lobby, hostSlot, humans)) {
+      return beginRace({ ...state, players }, frame, prep, lobby.map((p) => p.slot));
     }
   } else if (phase === 'COUNTDOWN' && frame - phaseStart >= COUNTDOWN_TICKS) {
     phase = 'RACING';
     phaseStart = frame;
+    raceStart = frame;
   }
 
   const driving = phase === 'COUNTDOWN' || phase === 'RACING' || phase === 'RESULTS';
@@ -809,7 +925,9 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       }
       world = applyDeterministicWorldEdit3D(world, { replace: edits, removeJointIds: ropes });
     }
-    const allDone = players.every((p) => p.finishTick >= 0);
+    // The race ends when every human in it has finished (bots and spectators never hold it open).
+    const racersHuman = players.filter((p) => p.inRace && p.slot < humans);
+    const allDone = racersHuman.length > 0 && racersHuman.every((p) => p.finishTick >= 0);
     const firstFinish = finishOrder.length > 0 ? players[finishOrder[0]!]!.finishTick : -1;
     if (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS)) {
       phase = 'RESULTS';
@@ -817,10 +935,11 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, pickups, nextPickupId, seed: state.seed, finishOrder, activeCells };
+  return { frame, phase, phaseStart, physics: world, players, slicks, pickups, nextPickupId, seed: state.seed, bots: state.bots, raceStart, finishOrder, activeCells };
 }
 
 export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
+  const hostSlot = hostSlotOf(state.players, state.frame, state.players.length - state.bots);
   const players: PlayerView[] = state.players.map((p) => {
     const body = deterministicPhysicsBodyById3D(state.physics, carId(p.slot));
     const present = body !== undefined;
@@ -841,6 +960,10 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       build: p.build,
       ready: p.ready,
       present,
+      joined: isHere(p, state.frame, state.players.length - state.bots),
+      inRace: p.inRace,
+      host: p.slot === hostSlot,
+      bot: p.slot >= state.players.length - state.bots,
       ...pose,
       nextCheckpoint: p.nextCheckpoint,
       finishTick: p.finishTick,
@@ -852,18 +975,29 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       partsGained: p.partsGained,
       partsStolen: p.partsStolen,
       lastLossTick: p.lastLossTick,
+      rematch: p.rematch,
     };
   });
   return {
     frame: state.frame,
     phase: state.phase,
     phaseTicks: state.frame - state.phaseStart,
+    raceStart: state.raceStart,
+    hostSlot,
     players,
     slicks: state.slicks,
     pickups: state.pickups,
     finishOrder: state.finishOrder,
     activeCells: state.activeCells,
   };
+}
+
+/** Who is in the lobby and whether the host may start; mirrors the sim's own rule (the sim has the final say). */
+export function lobbyStatus(frame: GameProjection): { members: PlayerView[]; count: number; notReady: number; canStart: boolean } {
+  const members = frame.players.filter((p) => p.joined && (p.bot || frame.phase === 'BUILD' || p.rematch));
+  const notReady = members.filter((p) => !p.bot && !p.host && !p.ready).length;
+  const hostIn = members.some((p) => p.host);
+  return { members, count: members.length, notReady, canStart: hostIn && members.length >= 2 && notReady === 0 };
 }
 
 /** Readable stats for a build (build screen bars). Same formulas the vehicle uses. */

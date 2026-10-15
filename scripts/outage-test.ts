@@ -1,5 +1,6 @@
 // Reproduces "player drops off the network and comes back" in the simulated room:  npm run test:outage
 // Reports how far the OTHER player advances during the outage and how many rollbacks the recovery costs.
+import { MAX_PLAYERS } from '../src/sim/limits.ts';
 import { createSimulatedSyncplayMatch } from '@series-inc/rundot-syncplay/testing';
 import { encodeInput, decodeInput } from '../src/sim/input-codec.ts';
 import { DEFAULT_INPUT, type GameInput } from '../src/sim/game.ts';
@@ -9,11 +10,11 @@ import { loadBakedMaps } from './lib/load-maps.ts';
 loadBakedMaps();
 const session = makeSessionConfig('route1');
 const driver = (slot: number, tick: number): GameInput => ({
-  ...DEFAULT_INPUT, ready: tick > 5, throttle: 100,
+  ...DEFAULT_INPUT, ready: tick > 5, present: true, start: tick > 5, throttle: 100,
   steer: Math.round((60 * Math.sin((tick + slot * 40) / 25)) / 10) * 10,
 });
 const roomConfig = {
-  playerCount: 2, seed: 1, hardToleranceTicks: Number(process.env['TOL'] ?? 12), tickRateHz: 30, redundancyWindowTicks: 8,
+  playerCount: MAX_PLAYERS, seed: 1, hardToleranceTicks: Number(process.env['TOL'] ?? 12), tickRateHz: 30, redundancyWindowTicks: 8,
   runtimeIdentity, sessionConfigBytes: session.bytes, sessionConfigDigest: session.digest,
   neutralInput: encodeInput(DEFAULT_INPUT), snapshotCadenceTicks: 60,
 };

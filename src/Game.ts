@@ -8,6 +8,7 @@ import { DEFAULT_BUILD, DEFAULT_INPUT, type Build, type GameProjection } from '.
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
 import { DEFAULT_MAP } from './sim/runtime.js';
+import { TipCoach } from './tips.js';
 
 export type Screen = 'title' | 'connecting' | 'play' | 'error';
 
@@ -47,6 +48,14 @@ export interface UiState {
   readonly checkpointTotal: number;
   /** Direction to the next checkpoint relative to the car's heading (degrees, + = to the left) and distance in metres. */
   readonly hint: { readonly angle: number; readonly distance: number } | null;
+  /** A first-time tip to show over the race, or null. */
+  readonly tip: string | null;
+  /** True once the player has pressed Rematch and the room has not restarted yet. */
+  readonly rematchRequested: boolean;
+  /** The last results this player saw, kept so a race that starts without them does not take them away. */
+  readonly cachedResults: GameProjection | undefined;
+  /** Progress text for the Connecting screen (for example while rejoining). */
+  readonly connectNote: string;
 }
 
 type Listener = (state: UiState) => void;
@@ -55,6 +64,12 @@ type Listener = (state: UiState) => void;
 const CONNECT_TIMEOUT_MS = 20000;
 /** A live race that makes no progress for this long is treated as a lost connection. */
 const STALL_TIMEOUT_MS = 8000;
+/** After returning to a hidden tab the connection may need a while to catch up; the stall watchdog stays quiet for this long. */
+const RESUME_GRACE_MS = 20000;
+/** Pauses between rejoin attempts: the room may take a few seconds to notice the old connection is gone. */
+const REJOIN_DELAYS_MS = [1500, 2500, 3500, 4500, 6000, 8000];
+/** Errors that retrying cannot fix. */
+const PERMANENT_ERROR = /room-full|room is full|room not found|no such room|identity|config invalid|history-unavailable|history unavailable|disposed|expired/i;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -77,6 +92,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
 
 /** Turns transport/matchmaking errors into something a player can act on. */
 function friendlyError(message: string): string {
+  if (/history-unavailable|history unavailable/i.test(message)) return 'The room can no longer rebuild the race for you. Go back and join or host a new race.';
+  if (/room-full|room is full/i.test(message)) return 'That room is full.';
+  if (/room not found|no such room|not found|expired|disposed/i.test(message)) return 'That room is gone.';
+  if (/already-joined|already joined/i.test(message)) return 'The room still thinks your old connection is open. It should clear in a few seconds.';
   if (/duplicate session/i.test(message)) return 'You are still seated in a previous room. Wait a few seconds and try again.';
   if (/rate limit/i.test(message)) return 'The server is busy. Please try again in a moment.';
   if (/stalled/i.test(message)) return 'The connection to the race stalled. Rejoin to pick up where you left off.';
@@ -98,6 +117,19 @@ export class Game {
   private map: MapData | undefined;
   private build: Build = DEFAULT_BUILD;
   private ready = false;
+  private wantRematch = false;
+  private startUntil = 0;
+  private connectNote = '';
+  private rejoining = false;
+  /** One automatic rejoin per dropped connection; after that the player decides. */
+  private autoRejoinArmed = false;
+  private autoRejoinTimes: number[] = [];
+  private resumeGraceUntil = 0;
+  private backgroundTimer = 0;
+  private lifecycleUnsubs: (() => void)[] = [];
+  private lastResults: GameProjection | undefined;
+  private tips = new TipCoach();
+  private tipText: string | null = null;
   private lastNow = 0;
   private lastEmit = 0;
   private raf = 0;
@@ -129,16 +161,91 @@ export class Game {
     this.unsubscribe = this.runner.subscribe((snap) => {
       this.snapshot = snap;
       if (snap.roomCode) this.lastRoom = snap.roomCode;
-      if (snap.status === 'error') {
+      if (snap.status === 'error' && this.screen !== 'connecting') {
+        if (this.screen === 'play') this.armAutoRejoin();
         this.screen = 'error';
         this.errorDetail = snap.error?.message ?? '';
         this.error = friendlyError(this.errorDetail);
+        console.warn('[net] connection lost:', this.errorDetail);
       }
     });
     this.raf = requestAnimationFrame(this.frame);
     void this.loadGraphics();
     void this.loadBuild();
+    void this.tips.load();
+    this.watchVisibility();
   }
+
+  /**
+   * A browser throttles or freezes a hidden tab, which would silence this client (no inputs, no keep-alive) and get it
+   * dropped from the room. While hidden, a timer keeps the session ticking with neutral input; when the tab is shown
+   * again the connection gets a grace period to catch up, and a dropped connection is re-established automatically.
+   */
+  private watchVisibility(): void {
+    const onVisibility = (): void => {
+      if (document.hidden) {
+        if (this.backgroundTimer === 0) this.backgroundTimer = window.setInterval(this.backgroundTick, 250);
+      } else {
+        this.leaveBackground();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    this.lifecycleUnsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+    try {
+      const lifecycles = RundotGameAPI.lifecycles;
+      const subs = [
+        lifecycles.onPause(() => console.warn('[net] host paused the game')),
+        lifecycles.onSleep(() => console.warn('[net] host put the game to sleep')),
+        lifecycles.onResume(() => this.leaveBackground()),
+        lifecycles.onAwake(() => this.leaveBackground()),
+      ];
+      this.lifecycleUnsubs.push(() => subs.forEach((sub) => sub.unsubscribe()));
+    } catch {
+      // Lifecycle hooks are not available outside the host; the visibility handler above still works.
+    }
+  }
+
+  /** Allows one automatic rejoin for this drop, but not an endless loop if the connection keeps flapping (3 per 2 minutes). */
+  private armAutoRejoin(): void {
+    const now = performance.now();
+    this.autoRejoinTimes = this.autoRejoinTimes.filter((t) => now - t < 120000);
+    if (this.lastRoom === '' || this.autoRejoinTimes.length >= 3) return;
+    this.autoRejoinTimes.push(now);
+    this.autoRejoinArmed = true;
+  }
+
+  private leaveBackground(): void {
+    if (this.backgroundTimer !== 0) {
+      window.clearInterval(this.backgroundTimer);
+      this.backgroundTimer = 0;
+    }
+    this.resumeGraceUntil = performance.now() + RESUME_GRACE_MS;
+    this.stallSince = 0;
+    this.lastNow = 0;
+  }
+
+  /** Runs while the tab is hidden: keep the session alive with neutral input, and no rendering. */
+  private backgroundTick = (): void => {
+    // Online rooms only: an offline practice race simply pauses while the tab is hidden.
+    if (this.screen !== 'play' || this.lastRoom === '') return;
+    const now = performance.now();
+    let elapsed = this.lastNow === 0 ? 250 : now - this.lastNow;
+    this.lastNow = now;
+    this.runner.applyInput({
+      ...DEFAULT_INPUT,
+      present: true,
+      bodySel: this.build.body,
+      legsSel: this.build.legs,
+      armsSel: this.build.arms,
+      headSel: this.build.head,
+      ready: this.ready,
+    });
+    for (let i = 0; i < 6 && elapsed > 0; i += 1) {
+      const step = Math.min(250, elapsed);
+      this.runner.update(step);
+      elapsed -= step;
+    }
+  };
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -148,7 +255,7 @@ export class Game {
 
   private hint(frame: GameProjection | undefined, slot: number): UiState['hint'] {
     const me = frame?.players[slot];
-    if (!frame || !me || !this.map || frame.phase !== 'RACING') return null;
+    if (!frame || !me || !this.map || frame.phase !== 'RACING' || !me.inRace) return null;
     const cp = this.map.checkpoints[me.nextCheckpoint];
     if (!cp) return null;
     // Forward vector of the car from its orientation (+z forward, +x is the car's left).
@@ -198,10 +305,18 @@ export class Game {
       showColliders: this.showColliders,
       checkpointTotal: this.map?.checkpoints.length ?? 0,
       hint: this.hint(frame, snap?.localSlot ?? 0),
+      tip: this.tipText,
+      rematchRequested: this.wantRematch,
+      cachedResults: this.lastResults,
+      connectNote: this.connectNote,
     };
   }
 
   private emit(): void {
+    const snap = this.snapshot;
+    this.tipText = this.screen === 'play'
+      ? this.tips.update({ frame: snap?.interpolatedRenderState ?? snap?.renderState, slot: snap?.localSlot ?? 0, nowMs: performance.now(), checkpointTotal: this.map?.checkpoints.length ?? 0, offline: this.lastRoom === '' })
+      : null;
     const s = this.state();
     for (const l of this.listeners) l(s);
   }
@@ -312,7 +427,7 @@ export class Game {
       return;
     }
     const predicted = snap?.predictedThrough ?? -1;
-    const stuck = snap?.connection === 'reconnecting' || predicted === this.lastPredicted;
+    const stuck = now >= this.resumeGraceUntil && (snap?.connection === 'reconnecting' || predicted === this.lastPredicted);
     this.lastPredicted = predicted;
     if (!stuck) {
       this.stallSince = 0;
@@ -325,6 +440,8 @@ export class Game {
   private dropToError(detail: string): void {
     this.syncingSince = 0;
     this.stallSince = 0;
+    if (this.screen === 'play') this.armAutoRejoin();
+    console.warn('[net] giving up on the connection:', detail);
     this.runner.stop();
     this.screen = 'error';
     this.errorDetail = detail;
@@ -335,9 +452,32 @@ export class Game {
   private frame = (now: number): void => {
     const dt = this.lastNow === 0 ? 16 : Math.min(100, now - this.lastNow);
     this.watchSync(now);
+    if (this.autoRejoinArmed && this.screen === 'error' && !this.rejoining) {
+      this.autoRejoinArmed = false;
+      void this.rejoin();
+    }
     this.lastNow = now;
     if (this.screen === 'play') {
-      const base = { ...DEFAULT_INPUT, bodySel: this.build.body, legsSel: this.build.legs, armsSel: this.build.arms, headSel: this.build.head, ready: this.ready };
+      // The ready flag is per race: it is cleared on the results screen so a rematch starts at the build screen.
+      const current = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+      const me = current?.players[this.snapshot?.localSlot ?? 0];
+      if (current?.phase === 'RESULTS') this.lastResults = current;
+      // In the lobby (the build screen, or after asking for a rematch) Ready is the player's own choice; elsewhere it resets.
+      const inLobby = current?.phase === 'BUILD' || this.wantRematch || me?.rematch === true;
+      if (!inLobby) this.ready = false;
+      // The rematch request is sent until the room has taken it (build phase) or this player is in the next race.
+      if (current?.phase === 'BUILD' || (me?.inRace === true && (current?.phase === 'COUNTDOWN' || current?.phase === 'RACING'))) this.wantRematch = false;
+      const base = {
+        ...DEFAULT_INPUT,
+        present: true, // a connected client always announces itself, so the room can tell occupied slots from empty ones
+        start: performance.now() < this.startUntil,
+        bodySel: this.build.body,
+        legsSel: this.build.legs,
+        armsSel: this.build.arms,
+        headSel: this.build.head,
+        ready: this.ready,
+        rematch: this.wantRematch,
+      };
       this.runner.applyInput(this.controls.read(base));
       const u0 = performance.now();
       this.runner.update(dt);
@@ -424,34 +564,47 @@ export class Game {
    */
   async rejoin(): Promise<void> {
     const code = this.lastRoom;
-    if (!code) return;
+    if (!code || this.rejoining) return;
+    this.rejoining = true;
     this.screen = 'connecting';
     this.error = '';
     this.errorDetail = '';
     this.emit();
-    let lastError = '';
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      await new Promise((r) => setTimeout(r, 1500 + attempt * 2000));
-      try {
-        this.map = await ensureMap(DEFAULT_MAP);
-        this.view.setMap(this.map);
-        await withTimeout(joinRace(this.runner, code), CONNECT_TIMEOUT_MS, () => this.runner.stop());
-        this.screen = 'play';
+    const attempts: string[] = [];
+    try {
+      for (let attempt = 0; attempt < REJOIN_DELAYS_MS.length; attempt += 1) {
+        this.connectNote = `Rejoining the race (attempt ${attempt + 1} of ${REJOIN_DELAYS_MS.length})...`;
         this.emit();
-        return;
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : String(e);
-        if (!/duplicate session|rate limit|busy|timeout/i.test(lastError)) break;
+        await new Promise((r) => setTimeout(r, REJOIN_DELAYS_MS[attempt]));
+        try {
+          this.map = await ensureMap(DEFAULT_MAP);
+          this.view.setMap(this.map);
+          await withTimeout(joinRace(this.runner, code), CONNECT_TIMEOUT_MS, () => this.runner.stop());
+          this.screen = 'play';
+          this.connectNote = '';
+          this.resumeGraceUntil = performance.now() + RESUME_GRACE_MS;
+          this.emit();
+          return;
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          attempts.push(`#${attempt + 1}: ${message}`);
+          console.warn(`[net] rejoin attempt ${attempt + 1} failed:`, message);
+          if (PERMANENT_ERROR.test(message)) break;
+        }
       }
+      this.screen = 'error';
+      this.connectNote = '';
+      this.errorDetail = attempts.join(' | ');
+      this.error = friendlyError(attempts[attempts.length - 1] ?? '');
+      this.emit();
+    } finally {
+      this.rejoining = false;
     }
-    this.screen = 'error';
-    this.errorDetail = lastError;
-    this.error = friendlyError(lastError);
-    this.emit();
   }
 
   leave(): void {
     this.lastRoom = '';
+    this.lastResults = undefined;
     this.runner.stop();
     this.snapshot = undefined;
     this.screen = 'title';
@@ -492,8 +645,28 @@ export class Game {
     this.emit();
   }
 
+  /** Host only: start the race. A short pulse; the room starts it if everyone in the lobby is ready. */
+  startRace(): void {
+    this.startUntil = performance.now() + 400;
+    this.emit();
+  }
+
+  /** Results screen (or a race you are not in): go to the lobby for the next race. Only this player moves. */
+  rematch(): void {
+    this.wantRematch = true;
+    this.ready = false;
+    this.emit();
+  }
+
+  dismissTip(): void {
+    this.tips.dismiss(performance.now());
+    this.emit();
+  }
+
   dispose(): void {
     cancelAnimationFrame(this.raf);
+    if (this.backgroundTimer !== 0) window.clearInterval(this.backgroundTimer);
+    this.lifecycleUnsubs.forEach((off) => off());
     this.unsubscribe();
     this.runner.dispose();
     this.view.dispose();

@@ -8,7 +8,7 @@ import {
 } from '@series-inc/rundot-syncplay/browser';
 import { DEFAULT_INPUT, type GameInput, type GameProjection, type PlayerView } from '../sim/game.js';
 import { decodeInput, encodeInput } from '../sim/input-codec.js';
-import { createGameRuntime, DEFAULT_MAP, makeSessionConfig, PLAYERS, runtimeIdentity } from '../sim/runtime.js';
+import { createGameRuntime, DEFAULT_MAP, makeSessionConfig, MAX_PLAYERS, runtimeIdentity } from '../sim/runtime.js';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
@@ -68,10 +68,10 @@ export async function startPractice(runner: FrankenRunner, map: string = DEFAULT
   await runner.start({
     mode: 'offline',
     identity: runtimeIdentity,
-    sessionConfigBytes: makeSessionConfig(map).bytes,
-    playerCount: PLAYERS,
+    sessionConfigBytes: makeSessionConfig(map, 1, 2).bytes, // one human and one idle bot
+    playerCount: 2,
     localSlot: 0,
-    botInputForTick: () => ({ ...DEFAULT_INPUT, ready: true }),
+    botInputForTick: () => ({ ...DEFAULT_INPUT, present: true, ready: true }),
   });
 }
 
@@ -79,7 +79,7 @@ export async function hostRace(runner: FrankenRunner, map: string = DEFAULT_MAP)
   await RundotGameAPI.initializeAsync();
   const session = makeSessionConfig(map);
   const transport = await createSyncplayRoom(RundotGameAPI.realtime, {
-    maxPlayers: PLAYERS,
+    maxPlayers: MAX_PLAYERS,
     runtimeIdentity,
     sessionConfigBytes: session.bytes,
     sessionConfigDigest: session.digest,
@@ -101,7 +101,7 @@ export async function quickMatch(runner: FrankenRunner, map: string = DEFAULT_MA
   await RundotGameAPI.initializeAsync();
   const session = makeSessionConfig(map);
   const transport = await quickMatchSyncplayRoom(RundotGameAPI.realtime, {
-    maxPlayers: PLAYERS,
+    maxPlayers: MAX_PLAYERS,
     runtimeIdentity,
     sessionConfigBytes: session.bytes,
     sessionConfigDigest: session.digest,
