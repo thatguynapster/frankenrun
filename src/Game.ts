@@ -17,6 +17,16 @@ export type Graphics = 'auto' | 'high' | 'medium' | 'low';
 const GRAPHICS_ORDER: readonly Graphics[] = ['auto', 'high', 'medium', 'low'];
 const GRAPHICS_STORAGE_KEY = 'frankenrun.graphics';
 const BUILD_STORAGE_KEY = 'frankenrun.build';
+const SETTINGS_STORAGE_KEY = 'frankenrun.settings';
+/** Gametags are relayed between clients; keep them short and plain. */
+const NAME_MAX = 20;
+const NAME_RESEND_MS = 2500;
+
+function cleanName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, NAME_MAX);
+}
 /** Fixed quality steps for the pinned settings (indices into RaceView.PIXEL_RATIOS). */
 const PINNED_LEVEL: Record<Exclude<Graphics, 'auto'>, number> = { high: 0, medium: 2, low: 3 };
 
@@ -56,6 +66,13 @@ export interface UiState {
   readonly cachedResults: GameProjection | undefined;
   /** Progress text for the Connecting screen (for example while rejoining). */
   readonly connectNote: string;
+  /** Gametags by slot (own tag from the profile, others relayed through the room). */
+  readonly names: Readonly<Record<number, string>>;
+  readonly menuOpen: boolean;
+  /** True in an online room (the game keeps running while the menu is open). */
+  readonly online: boolean;
+  /** Show the performance readout on screen. */
+  readonly showInfo: boolean;
 }
 
 type Listener = (state: UiState) => void;
@@ -119,6 +136,13 @@ export class Game {
   private ready = false;
   private wantRematch = false;
   private startUntil = 0;
+  private menuOpen = false;
+  private showInfo = true;
+  private ownName = '';
+  private names = new Map<number, string>();
+  private lastNameSend = 0;
+  private lastOccupied = -1;
+  private unbindNames: (() => void) | undefined;
   private connectNote = '';
   private rejoining = false;
   /** One automatic rejoin per dropped connection; after that the player decides. */
@@ -173,7 +197,114 @@ export class Game {
     void this.loadGraphics();
     void this.loadBuild();
     void this.tips.load();
+    void this.loadSettings();
+    void this.loadProfile();
     this.watchVisibility();
+    this.onKeyDown = (e: KeyboardEvent): void => {
+      if (e.code === 'Escape' && !e.repeat && this.screen === 'play') {
+        e.preventDefault();
+        this.toggleMenu();
+      }
+    };
+    window.addEventListener('keydown', this.onKeyDown);
+  }
+
+  private onKeyDown: (e: KeyboardEvent) => void;
+
+  /** The player's own gametag comes from their profile; everyone else's arrives through the room (see bindNames). */
+  private async loadProfile(): Promise<void> {
+    try {
+      await RundotGameAPI.initializeAsync();
+      this.ownName = cleanName(RundotGameAPI.getProfile().username);
+    } catch {
+      // No profile (should not happen in the host): players are shown as Player N.
+    }
+  }
+
+  private nameTable(): Record<number, string> {
+    const table: Record<number, string> = {};
+    for (const [slot, name] of this.names) table[slot] = name;
+    const own = this.snapshot?.localSlot ?? 0;
+    if (this.ownName !== '') table[own] = this.ownName;
+    return table;
+  }
+
+  /** Listens for the other players' gametags on the room's ephemeral channel (best effort; they are re-sent every few seconds). */
+  private bindNames(): void {
+    this.unbindNames?.();
+    this.unbindNames = undefined;
+    this.names.clear();
+    try {
+      this.unbindNames = this.runner.onEphemeral((slot, payload) => {
+        const name = cleanName((payload as { n?: unknown } | null)?.n);
+        if (name !== '' && this.names.get(slot) !== name) {
+          this.names.set(slot, name);
+          this.emit();
+        }
+      });
+    } catch {
+      // Not networked: nothing to listen to.
+    }
+  }
+
+  /** Announces this player's gametag to the room, every couple of seconds and whenever somebody joins. */
+  private shareName(now: number): void {
+    const snap = this.snapshot;
+    if (this.ownName === '' || this.lastRoom === '' || snap?.status !== 'live') return;
+    const occupied = snap.occupancy?.occupied ?? 0;
+    if (now - this.lastNameSend < NAME_RESEND_MS && occupied === this.lastOccupied) return;
+    this.lastNameSend = now;
+    this.lastOccupied = occupied;
+    try {
+      this.runner.sendEphemeral({ n: this.ownName });
+    } catch {
+      // Best effort.
+    }
+  }
+
+  toggleMenu(): void {
+    this.menuOpen = !this.menuOpen;
+    this.emit();
+  }
+
+  setGraphics(value: Graphics): void {
+    this.graphics = value;
+    this.applyGraphics();
+    this.saveGraphics();
+    this.emit();
+  }
+
+  setShowInfo(on: boolean): void {
+    this.showInfo = on;
+    this.saveSettings();
+    this.emit();
+  }
+
+  setColliders(on: boolean): void {
+    this.showColliders = on;
+    this.emit();
+  }
+
+  replayTips(): void {
+    this.tips.reset();
+    this.emit();
+  }
+
+  private async loadSettings(): Promise<void> {
+    try {
+      const saved = await RundotGameAPI.deviceCache.getItem(SETTINGS_STORAGE_KEY);
+      if (saved) {
+        const raw = JSON.parse(saved) as { showInfo?: unknown };
+        if (typeof raw.showInfo === 'boolean') this.showInfo = raw.showInfo;
+        this.emit();
+      }
+    } catch {
+      // Defaults.
+    }
+  }
+
+  private saveSettings(): void {
+    RundotGameAPI.deviceCache.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ showInfo: this.showInfo })).catch(() => undefined);
   }
 
   /**
@@ -309,6 +440,10 @@ export class Game {
       rematchRequested: this.wantRematch,
       cachedResults: this.lastResults,
       connectNote: this.connectNote,
+      names: this.nameTable(),
+      menuOpen: this.menuOpen,
+      online: this.lastRoom !== '',
+      showInfo: this.showInfo,
     };
   }
 
@@ -467,6 +602,7 @@ export class Game {
       if (!inLobby) this.ready = false;
       // The rematch request is sent until the room has taken it (build phase) or this player is in the next race.
       if (current?.phase === 'BUILD' || (me?.inRace === true && (current?.phase === 'COUNTDOWN' || current?.phase === 'RACING'))) this.wantRematch = false;
+      this.shareName(now);
       const base = {
         ...DEFAULT_INPUT,
         present: true, // a connected client always announces itself, so the room can tell occupied slots from empty ones
@@ -478,12 +614,15 @@ export class Game {
         ready: this.ready,
         rematch: this.wantRematch,
       };
-      this.runner.applyInput(this.controls.read(base));
-      const u0 = performance.now();
-      this.runner.update(dt);
-      const um = performance.now() - u0;
-      this.perfUpdate += um;
-      if (um > this.perfMaxUpdate) this.perfMaxUpdate = um;
+      // With the menu open the monster gets neutral input; an offline race pauses, an online one keeps running.
+      this.runner.applyInput(this.menuOpen ? base : this.controls.read(base));
+      if (!(this.menuOpen && this.lastRoom === '')) {
+        const u0 = performance.now();
+        this.runner.update(dt);
+        const um = performance.now() - u0;
+        this.perfUpdate += um;
+        if (um > this.perfMaxUpdate) this.perfMaxUpdate = um;
+      }
     }
     const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
     const r0 = performance.now();
@@ -534,6 +673,7 @@ export class Game {
       this.map = await ensureMap(DEFAULT_MAP);
       this.view.setMap(this.map);
       await withTimeout(start(), CONNECT_TIMEOUT_MS, () => this.runner.stop());
+      this.bindNames();
       this.screen = 'play';
     } catch (e) {
       this.screen = 'error';
@@ -580,6 +720,7 @@ export class Game {
           this.map = await ensureMap(DEFAULT_MAP);
           this.view.setMap(this.map);
           await withTimeout(joinRace(this.runner, code), CONNECT_TIMEOUT_MS, () => this.runner.stop());
+          this.bindNames();
           this.screen = 'play';
           this.connectNote = '';
           this.resumeGraceUntil = performance.now() + RESUME_GRACE_MS;
@@ -605,6 +746,8 @@ export class Game {
   leave(): void {
     this.lastRoom = '';
     this.lastResults = undefined;
+    this.menuOpen = false;
+    this.names.clear();
     this.runner.stop();
     this.snapshot = undefined;
     this.screen = 'title';
@@ -664,6 +807,8 @@ export class Game {
   }
 
   dispose(): void {
+    window.removeEventListener('keydown', this.onKeyDown);
+    this.unbindNames?.();
     cancelAnimationFrame(this.raf);
     if (this.backgroundTimer !== 0) window.clearInterval(this.backgroundTimer);
     this.lifecycleUnsubs.forEach((off) => off());

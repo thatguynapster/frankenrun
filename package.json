@@ -22,7 +22,8 @@
     "test:colliders": "node scripts/run-ts.mjs scripts/collider-audit.ts",
     "test:outage": "node scripts/run-ts.mjs scripts/outage-test.ts",
     "test:lobby": "node scripts/run-ts.mjs scripts/lobby-test.ts",
-    "test:rejoin": "node scripts/run-ts.mjs scripts/rejoin-test.ts"
+    "test:rejoin": "node scripts/run-ts.mjs scripts/rejoin-test.ts",
+    "test:names": "node scripts/run-ts.mjs scripts/names-test.ts"
   },
   "keywords": [
     "react",

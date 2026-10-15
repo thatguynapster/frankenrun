@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
-import { Game, type UiState } from './Game';
+import { Game, type Graphics, type UiState } from './Game';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts';
 import { ARM_TENTACLES, HEAD_SLIME, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
 import './style.css';
@@ -102,11 +102,73 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       </div>
     );
   }
-  return <PlayOverlay game={game} ui={ui} />;
+  return (
+    <>
+      <PlayOverlay game={game} ui={ui} />
+      {ui.menuOpen && <MenuPanel game={game} ui={ui} />}
+    </>
+  );
 }
 
-function ResultsPanel({ game, frame, meSlot, mode, banner }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string }) {
+const GRAPHICS_CHOICES: readonly { value: Graphics; label: string; note: string }[] = [
+  { value: 'auto', label: 'Auto', note: 'adapts to your device' },
+  { value: 'high', label: 'High', note: 'sharpest' },
+  { value: 'medium', label: 'Medium', note: '' },
+  { value: 'low', label: 'Low', note: 'fastest' },
+];
+
+/** Esc (or the Menu button): quick settings. The game does not pause online, so the monster just stops responding to input. */
+function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
+  return (
+    <div className="panel center menu">
+      <h2 className="title small">Menu</h2>
+      {ui.online && <p className="muted small">The race keeps going while this is open.</p>}
+      <div className="menu-section">
+        <b>Graphics quality</b>
+        <div className="chips">
+          {GRAPHICS_CHOICES.map((choice) => (
+            <button key={choice.value} className={`chip ${ui.graphics === choice.value ? 'on' : ''}`} onClick={() => game.setGraphics(choice.value)}>
+              {choice.label}
+            </button>
+          ))}
+        </div>
+        <small>Lower it if the game stutters; Auto adapts to your device.</small>
+      </div>
+      <div className="menu-section">
+        <b>On screen</b>
+        <div className="chips">
+          <button className={`chip ${ui.showInfo ? 'on' : ''}`} onClick={() => game.setShowInfo(!ui.showInfo)}>
+            Performance info: {ui.showInfo ? 'on' : 'off'}
+          </button>
+          <button className={`chip ${ui.showColliders ? 'on' : ''}`} onClick={() => game.setColliders(!ui.showColliders)}>
+            Show colliders: {ui.showColliders ? 'on' : 'off'}
+          </button>
+        </div>
+      </div>
+      <div className="menu-section">
+        <b>Help</b>
+        <div className="chips">
+          <button className="chip" onClick={() => game.replayTips()}>
+            Show tips again
+          </button>
+        </div>
+        <small>W go · S brake · A/D steer · J tentacles · K slime · hold R to reset · Esc menu</small>
+      </div>
+      <div className="row">
+        <button className="btn primary" onClick={() => game.toggleMenu()}>
+          Resume
+        </button>
+        <button className="btn" onClick={() => game.leave()}>
+          Leave game
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ResultsPanel({ game, frame, meSlot, mode, banner, names }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>> }) {
   const me = frame.players[meSlot];
+  const nameOf = (slot: number): string => names[slot] ?? `Player ${slot + 1}`;
   const racers = frame.players.filter((p) => p.inRace && !p.bot);
   return (
     <div className="panel center results">
@@ -118,7 +180,7 @@ function ResultsPanel({ game, frame, meSlot, mode, banner }: { game: Game; frame
           const t = frame.players[slot]?.finishTick ?? 0;
           return (
             <li key={i}>
-              Player {slot + 1}
+              {nameOf(slot)}
               {slot === meSlot ? ' (you)' : ''} - {((t - frame.raceStart) / TICK).toFixed(1)}s
               <small className="muted"> · parts lost {frame.players[slot]?.partsLost ?? 0}, picked up {frame.players[slot]?.partsGained ?? 0}, stolen {frame.players[slot]?.partsStolen ?? 0}</small>
             </li>
@@ -128,7 +190,7 @@ function ResultsPanel({ game, frame, meSlot, mode, banner }: { game: Game; frame
           .filter((p) => p.finishTick < 0)
           .map((p) => (
             <li key={`dnf-${p.slot}`} className="muted">
-              Player {p.slot + 1} - {mode === 'finished' ? 'racing...' : 'DNF'}
+              {nameOf(p.slot)} - {mode === 'finished' ? 'racing...' : 'DNF'}
               <small> · parts lost {p.partsLost}, picked up {p.partsGained}, stolen {p.partsStolen}</small>
             </li>
           ))}
@@ -162,6 +224,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   const stats = buildStats(ui.build);
   const secs = (t: number) => (t / TICK).toFixed(1);
   const raceOn = frame.phase === 'COUNTDOWN' || frame.phase === 'RACING';
+  const nameOf = (slot: number): string => ui.names[slot] ?? `Player ${slot + 1}`;
 
   // The lobby is the build screen: everyone sees it before the first race, and after a race each player gets here by
   // pressing Rematch (the others keep their results until they do the same).
@@ -194,7 +257,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             const label = !inLobby ? (p.inRace && raceOn ? 'racing' : 'viewing results') : p.host ? 'host' : p.ready ? 'ready' : 'choosing';
             return (
               <span key={p.slot} className={`lobby-player ${inLobby ? (p.host || p.ready ? 'ready' : '') : 'away'}`}>
-                Player {p.slot + 1}
+                {nameOf(p.slot)}
                 {p.slot === me.slot ? ' (you)' : ''} · {label}
               </span>
             );
@@ -265,7 +328,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   // started): they keep the last results they saw and can join the next race.
   if (raceOn && !me.inRace) {
     if (ui.cachedResults) {
-      return <ResultsPanel game={game} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
+      return <ResultsPanel game={game} names={ui.names} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
     }
     return (
       <div className="panel center">
@@ -354,19 +417,16 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           </button>
         </div>
         <SteerZone game={game} />
-        <button className="gfx" onClick={() => game.cycleGraphics()}>
-          Graphics: {ui.graphics}
-        </button>
-        <button className="gfx gfx2" onClick={() => game.toggleColliders()}>
-          Colliders: {ui.showColliders ? 'on' : 'off'}
+        <button className="gfx" onClick={() => game.toggleMenu()}>
+          Menu (Esc)
         </button>
         <div className="net">
-          <div>{ui.diag}</div>
+          {ui.showInfo && <div>{ui.diag}</div>}
           {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection}`}</div>}
         </div>
       </div>
       {(frame.phase === 'RESULTS' || me.finishTick >= 0) && (
-        <ResultsPanel game={game} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
+        <ResultsPanel game={game} names={ui.names} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
       )}
       {ui.tip && me.finishTick < 0 && frame.phase !== 'RESULTS' && (
         <button className="tip" onClick={() => game.dismissTip()}>

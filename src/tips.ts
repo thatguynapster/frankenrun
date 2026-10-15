@@ -64,6 +64,12 @@ export class TipCoach {
     else this.queue.push(tip);
   }
 
+  /** Forgets which tips were shown, so they all appear again (Menu > Show tips again). */
+  reset(): void {
+    this.seen.clear();
+    this.save();
+  }
+
   dismiss(nowMs: number): void {
     if (this.current) {
       this.current = null;
