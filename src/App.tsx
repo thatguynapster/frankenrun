@@ -37,7 +37,13 @@ function App() {
 
   const game = gameRef.current;
   return (
-    <div className="app-container">
+    <div
+      className="app-container"
+      onClickCapture={(e) => {
+        // Every button press gets the same soft click.
+        if (game && (e.target as HTMLElement).closest('button')) game.audio.playUi('click');
+      }}
+    >
       <div ref={sceneRef} className="scene-container" />
       {game && ui && <Overlay game={game} ui={ui} code={code} setCode={setCode} />}
     </div>
@@ -133,6 +139,30 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
           ))}
         </div>
         <small>Lower it if the game stutters; Auto adapts to your device.</small>
+      </div>
+      <div className="menu-section">
+        <b>Sound</b>
+        <div className="chips">
+          <button className={`chip ${ui.audio.sfx ? 'on' : ''}`} onClick={() => game.setAudio({ sfx: !ui.audio.sfx })}>
+            Sound effects: {ui.audio.sfx ? 'on' : 'off'}
+          </button>
+          <button className={`chip ${ui.audio.music ? 'on' : ''}`} onClick={() => game.setAudio({ music: !ui.audio.music })}>
+            Music: {ui.audio.music ? 'on' : 'off'}
+          </button>
+        </div>
+        <label className="slider">
+          <span>Volume</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(ui.audio.volume * 100)}
+            onChange={(e) => game.setAudio({ volume: Number(e.target.value) / 100 })}
+            aria-label="Volume"
+          />
+          <em>{Math.round(ui.audio.volume * 100)}%</em>
+        </label>
       </div>
       <div className="menu-section">
         <b>On screen</b>

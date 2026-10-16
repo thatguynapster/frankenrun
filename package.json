@@ -23,7 +23,10 @@
     "test:outage": "node scripts/run-ts.mjs scripts/outage-test.ts",
     "test:lobby": "node scripts/run-ts.mjs scripts/lobby-test.ts",
     "test:rejoin": "node scripts/run-ts.mjs scripts/rejoin-test.ts",
-    "test:names": "node scripts/run-ts.mjs scripts/names-test.ts"
+    "test:names": "node scripts/run-ts.mjs scripts/names-test.ts",
+    "test:audio": "node scripts/run-ts.mjs scripts/audio-events-test.ts",
+    "audio:estimate": "node scripts/run-ts.mjs scripts/generate-audio.ts --estimate",
+    "audio:generate": "node scripts/run-ts.mjs scripts/generate-audio.ts"
   },
   "keywords": [
     "react",

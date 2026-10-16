@@ -4,11 +4,13 @@ import { Controls } from './input/Controls.js';
 import { ensureMap } from './net/mapLoader.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
-import { DEFAULT_BUILD, DEFAULT_INPUT, type Build, type GameProjection } from './sim/game.js';
+import { ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
 import { DEFAULT_MAP } from './sim/runtime.js';
 import { TipCoach } from './tips.js';
+import { AudioEngine, type AudioSettings, type Scene } from './audio/engine.js';
+import { AudioEvents } from './audio/events.js';
 
 export type Screen = 'title' | 'connecting' | 'play' | 'error';
 
@@ -77,6 +79,7 @@ export interface UiState {
   readonly showInfo: boolean;
   /** A phone or tablet: touch controls, chase camera only. */
   readonly touch: boolean;
+  readonly audio: AudioSettings;
 }
 
 type Listener = (state: UiState) => void;
@@ -141,6 +144,10 @@ export class Game {
   private wantRematch = false;
   private startUntil = 0;
   private menuOpen = false;
+  readonly audio = new AudioEngine();
+  private audioEvents = new AudioEvents();
+  /** Ability buttons held on the previous frame, to catch the moment of a press. */
+  private prevPress = { arms: false, head: false, reset: false };
   private showInfo = true;
   private aimScreen: { x: number; y: number } | null = null;
   private ownName = '';
@@ -204,6 +211,7 @@ export class Game {
     void this.tips.load();
     void this.loadSettings();
     void this.loadProfile();
+    this.audio.setChangeListener(() => this.emit());
     this.watchVisibility();
     this.onKeyDown = (e: KeyboardEvent): void => {
       if (e.code === 'Escape' && !e.repeat && this.screen === 'play') {
@@ -341,10 +349,22 @@ export class Game {
     try {
       const lifecycles = RundotGameAPI.lifecycles;
       const subs = [
-        lifecycles.onPause(() => console.warn('[net] host paused the game')),
-        lifecycles.onSleep(() => console.warn('[net] host put the game to sleep')),
-        lifecycles.onResume(() => this.leaveBackground()),
-        lifecycles.onAwake(() => this.leaveBackground()),
+        lifecycles.onPause(() => {
+          console.warn('[net] host paused the game');
+          this.audio.setSuspended(true);
+        }),
+        lifecycles.onSleep(() => {
+          console.warn('[net] host put the game to sleep');
+          this.audio.setSuspended(true);
+        }),
+        lifecycles.onResume(() => {
+          this.audio.setSuspended(false);
+          this.leaveBackground();
+        }),
+        lifecycles.onAwake(() => {
+          this.audio.setSuspended(false);
+          this.leaveBackground();
+        }),
       ];
       this.lifecycleUnsubs.push(() => subs.forEach((sub) => sub.unsubscribe()));
     } catch {
@@ -461,6 +481,7 @@ export class Game {
       online: this.lastRoom !== '',
       showInfo: this.showInfo,
       touch: this.controls.coarse,
+      audio: this.audio.settings,
     };
   }
 
@@ -633,6 +654,7 @@ export class Game {
       };
       // With the menu open the monster gets neutral input; an offline race pauses, an online one keeps running.
       const input = this.menuOpen ? base : this.controls.read(base);
+      this.pressSounds(input, me, current?.phase);
       this.runner.applyInput(input);
       if (!(this.menuOpen && this.lastRoom === '')) {
         const u0 = performance.now();
@@ -643,6 +665,7 @@ export class Game {
       }
     }
     const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    this.updateAudio(frame, now);
     // The mouse aims: the reticle sits on the ground under the cursor (no firing yet).
     this.view.setAim(this.screen === 'play' && !this.menuOpen && this.aimScreen !== null ? this.view.groundPoint(this.aimScreen.x, this.aimScreen.y) : null);
     const r0 = performance.now();
@@ -683,6 +706,44 @@ export class Game {
     this.raf = requestAnimationFrame(this.frame);
   };
 
+  /** Music follows the scene; sound effects come from what changed since the last frame (see audio/events.ts). */
+  private updateAudio(frame: GameProjection | undefined, now: number): void {
+    const slot = this.snapshot?.localSlot ?? 0;
+    const me = frame?.players[slot];
+    const scene: Scene = this.screen !== 'play' ? 'title' : frame !== undefined && (frame.phase === 'COUNTDOWN' || frame.phase === 'RACING') && me?.inRace === true ? 'race' : 'lobby';
+    this.audio.setScene(scene);
+    if (this.screen !== 'play' || frame === undefined || document.hidden) return;
+    for (const event of this.audioEvents.update(frame, slot, now)) this.audio.play(event, frame, slot);
+  }
+
+  /**
+   * Instant feedback when an ability button (or its key) goes down, whether or not the ability can fire: a whip or a
+   * squelch when it can, a dull "not now" when the part is missing or still cooling down. Reset gets a soft click now
+   * and a poof when the monster lands back at its checkpoint (see audio/events.ts).
+   */
+  private pressSounds(input: { arms: boolean; head: boolean; reset: boolean }, me: GameProjection['players'][number] | undefined, phase: GameProjection['phase'] | undefined): void {
+    const racing = phase === 'RACING' && me !== undefined && me.inRace && me.finishTick < 0;
+    const prev = this.prevPress;
+    if (racing && me !== undefined && !this.menuOpen) {
+      const slot = this.snapshot?.localSlot ?? 0;
+      const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+      if (input.arms && !prev.arms) {
+        if (me.build.arms === ARM_TENTACLES && me.armsCooldown === 0 && me.swingPole < 0 && frame) this.audio.play({ id: 'tentacle', slot }, frame, slot);
+        else this.audio.playUi('denied');
+      }
+      if (input.head && !prev.head) {
+        if (me.build.head === HEAD_SLIME && me.headCooldown === 0 && !me.trailing && frame) this.audio.play({ id: 'slime', slot }, frame, slot);
+        else this.audio.playUi('denied');
+      }
+      if (input.reset && !prev.reset) this.audio.playUi('click');
+    }
+    this.prevPress = { arms: input.arms, head: input.head, reset: input.reset };
+  }
+
+  setAudio(patch: Partial<AudioSettings>): void {
+    this.audio.setSettings(patch);
+  }
+
   private async enter(start: () => Promise<void>): Promise<void> {
     this.screen = 'connecting';
     this.error = '';
@@ -694,6 +755,7 @@ export class Game {
       this.view.setMap(this.map);
       await withTimeout(start(), CONNECT_TIMEOUT_MS, () => this.runner.stop());
       this.bindNames();
+      this.audioEvents.reset();
       this.screen = 'play';
     } catch (e) {
       this.screen = 'error';
@@ -766,6 +828,7 @@ export class Game {
   leave(): void {
     this.lastRoom = '';
     this.lastResults = undefined;
+    this.audioEvents.reset();
     this.menuOpen = false;
     this.names.clear();
     this.runner.stop();
