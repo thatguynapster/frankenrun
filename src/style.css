@@ -670,3 +670,63 @@ body {
 .menu-section .chips {
   justify-content: center;
 }
+
+/* Touch steering: a visible ring and knob so players know where to steer from. */
+.joystick {
+  position: absolute;
+  left: calc(34px + var(--safe-left));
+  bottom: calc(40px + var(--safe-bottom));
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.joy-knob {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(255, 210, 59, 0.55);
+  border: 3px solid rgba(255, 210, 59, 0.9);
+  transition: transform 60ms linear;
+}
+
+.joy-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 18px;
+  opacity: 0.55;
+}
+
+.joy-arrow.left {
+  left: 10px;
+}
+
+.joy-arrow.right {
+  right: 10px;
+}
+
+.joystick small {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+/* PC: the mouse aims, so show a crosshair over the game. */
+@media (pointer: fine) {
+  .scene-container {
+    cursor: crosshair;
+  }
+}

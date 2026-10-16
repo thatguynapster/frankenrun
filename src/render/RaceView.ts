@@ -48,6 +48,9 @@ export class RaceView {
   private camPos = new THREE.Vector3(0, 6, -10);
   private camLook = new THREE.Vector3(0, 1, 10);
   private cameraReady = false;
+  private aim: { x: number; z: number } | null = null;
+  private reticle: { group: THREE.Group; line: THREE.Line } | undefined;
+  private readonly raycaster = new THREE.Raycaster();
   private frameHandle = 0;
   private quality = 0;
   private baseQuality = 0;
@@ -381,6 +384,65 @@ export class RaceView {
     }
   }
 
+  // The aiming reticle (groundPoint, setAim, updateReticle) is switched off for now: Game only feeds it when
+  // SHOW_AIM_RETICLE is true. It is kept for the projectile and claw-grab work.
+
+  /** The ground point under a screen position, or null when the ray does not hit the ground (for the aiming reticle). */
+  groundPoint(clientX: number, clientY: number): { x: number; z: number } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1));
+    this.camera.updateMatrixWorld();
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const { origin, direction } = this.raycaster.ray;
+    if (direction.y >= -1e-4) return null;
+    const t = (0.3 - origin.y) / direction.y;
+    return { x: origin.x + direction.x * t, z: origin.z + direction.z * t };
+  }
+
+  /** Where the mouse is aiming (a ground point), or null to hide the reticle. */
+  setAim(point: { x: number; z: number } | null): void {
+    this.aim = point;
+  }
+
+  private updateReticle(own: PlayerView | undefined, racing: boolean): void {
+    const show = this.aim !== null && own !== undefined && own.present && racing;
+    if (!show) {
+      if (this.reticle) this.reticle.group.visible = false;
+      return;
+    }
+    if (this.reticle === undefined) {
+      const group = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.7, 0.95, 24), new THREE.MeshBasicMaterial({ color: 0xffd23b, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthTest: false }));
+      ring.rotation.x = -Math.PI / 2;
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.16, 12), new THREE.MeshBasicMaterial({ color: 0xffd23b, side: THREE.DoubleSide, depthTest: false }));
+      dot.rotation.x = -Math.PI / 2;
+      group.add(ring, dot);
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0xffd23b, transparent: true, opacity: 0.35, depthTest: false }));
+      line.frustumCulled = false;
+      group.add(line);
+      group.renderOrder = 9;
+      ring.renderOrder = 9;
+      dot.renderOrder = 9;
+      line.renderOrder = 9;
+      this.scene.add(group);
+      this.reticle = { group, line };
+    }
+    // Keep the reticle within reach of the monster so it never wanders off to the horizon.
+    const dx = this.aim!.x - own.x, dz = this.aim!.z - own.z;
+    const dist = Math.hypot(dx, dz);
+    const k = dist > 60 ? 60 / dist : 1;
+    const ax = own.x + dx * k, az = own.z + dz * k;
+    this.reticle.group.visible = true;
+    this.reticle.group.position.set(0, 0, 0);
+    (this.reticle.group.children[0] as THREE.Mesh).position.set(ax, 0.35, az);
+    (this.reticle.group.children[1] as THREE.Mesh).position.set(ax, 0.36, az);
+    const pos = this.reticle.line.geometry.attributes['position'] as THREE.BufferAttribute;
+    pos.setXYZ(0, own.x, 0.7, own.z);
+    pos.setXYZ(1, ax, 0.4, az);
+    pos.needsUpdate = true;
+  }
+
   private updateCamera(local: PlayerView | undefined, dt: number): void {
     if (local === undefined) return;
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(new THREE.Quaternion(local.qx, local.qy, local.qz, local.qw));
@@ -540,6 +602,7 @@ export class RaceView {
       const own = frame.players[localSlot] ?? frame.players[0];
       const local = own !== undefined && own.present ? own : (frame.players.filter((p) => p.present && !p.bot).sort((a, b) => b.nextCheckpoint - a.nextCheckpoint)[0] ?? own);
       this.updateLantern(frame, own !== undefined && own.present ? own : undefined, frame.frame / 30);
+      this.updateReticle(own !== undefined && own.present ? own : undefined, frame.phase === 'COUNTDOWN' || frame.phase === 'RACING');
       this.updateCamera(local, dtSeconds);
       const next = local === undefined ? 0 : local.nextCheckpoint;
       this.rings.forEach((ring, i) => {

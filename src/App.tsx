@@ -152,7 +152,7 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
             Show tips again
           </button>
         </div>
-        <small>W go · S brake · A/D steer · J tentacles · K slime · hold R to reset · Esc menu</small>
+        <small>{keysHelp(ui)}</small>
       </div>
       <div className="row">
         <button className="btn primary" onClick={() => game.toggleMenu()}>
@@ -164,6 +164,12 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
       </div>
     </div>
   );
+}
+
+/** The control keys for the scheme in use. */
+function keysHelp(ui: UiState): string {
+  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities · hold Reset to return to the last checkpoint';
+  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset · Esc menu';
 }
 
 function ResultsPanel({ game, frame, meSlot, mode, banner, names }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>> }) {
@@ -319,7 +325,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         </div>
         </div>
         </div>
-        <p className="muted small">Keys: W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset</p>
+        <p className="muted small">{keysHelp(ui)}</p>
       </div>
     );
   }
@@ -416,7 +422,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             Reset
           </button>
         </div>
-        <SteerZone game={game} />
+        <SteerZone game={game} touch={ui.touch} />
         <button className="gfx" onClick={() => game.toggleMenu()}>
           Menu (Esc)
         </button>
@@ -475,23 +481,45 @@ function AbilityButton(props: {
   );
 }
 
-function SteerZone({ game }: { game: Game }) {
+function SteerZone({ game, touch }: { game: Game; touch: boolean }) {
   const originX = useRef(0);
+  const knob = useRef<HTMLDivElement | null>(null);
+  const moveKnob = (dx: number) => {
+    if (knob.current) knob.current.style.transform = `translateX(${Math.max(-1, Math.min(1, dx)) * 42}px)`;
+  };
   return (
     <div
       className="steer-zone"
       onPointerDown={(e) => {
+        if (e.pointerType === 'mouse') return; // the mouse is for aiming, not steering
         originX.current = e.clientX;
         e.currentTarget.setPointerCapture(e.pointerId);
         game.controls.setTouchSteer(0);
       }}
       onPointerMove={(e) => {
-        if (e.buttons === 0) return;
-        game.controls.setTouchSteer((e.clientX - originX.current) / 60);
+        if (e.pointerType === 'mouse' || e.buttons === 0) return;
+        const value = (e.clientX - originX.current) / 60;
+        game.controls.setTouchSteer(value);
+        moveKnob(value);
       }}
-      onPointerUp={() => game.controls.setTouchSteer(0)}
-      onPointerCancel={() => game.controls.setTouchSteer(0)}
-    />
+      onPointerUp={() => {
+        game.controls.setTouchSteer(0);
+        moveKnob(0);
+      }}
+      onPointerCancel={() => {
+        game.controls.setTouchSteer(0);
+        moveKnob(0);
+      }}
+    >
+      {touch && (
+        <div className="joystick" aria-hidden="true">
+          <span className="joy-arrow left">◀</span>
+          <span className="joy-arrow right">▶</span>
+          <div className="joy-knob" ref={knob} />
+          <small>drag to steer</small>
+        </div>
+      )}
+    </div>
   );
 }
 

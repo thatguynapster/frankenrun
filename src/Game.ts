@@ -18,6 +18,8 @@ const GRAPHICS_ORDER: readonly Graphics[] = ['auto', 'high', 'medium', 'low'];
 const GRAPHICS_STORAGE_KEY = 'frankenrun.graphics';
 const BUILD_STORAGE_KEY = 'frankenrun.build';
 const SETTINGS_STORAGE_KEY = 'frankenrun.settings';
+/** The aiming reticle on PC is off for now (it only matters once there are projectiles or aimed grabs). */
+const SHOW_AIM_RETICLE = false;
 /** Gametags are relayed between clients; keep them short and plain. */
 const NAME_MAX = 20;
 const NAME_RESEND_MS = 2500;
@@ -73,6 +75,8 @@ export interface UiState {
   readonly online: boolean;
   /** Show the performance readout on screen. */
   readonly showInfo: boolean;
+  /** A phone or tablet: touch controls, chase camera only. */
+  readonly touch: boolean;
 }
 
 type Listener = (state: UiState) => void;
@@ -138,6 +142,7 @@ export class Game {
   private startUntil = 0;
   private menuOpen = false;
   private showInfo = true;
+  private aimScreen: { x: number; y: number } | null = null;
   private ownName = '';
   private names = new Map<number, string>();
   private lastNameSend = 0;
@@ -207,7 +212,18 @@ export class Game {
       }
     };
     window.addEventListener('keydown', this.onKeyDown);
+    this.onPointerMove = (e: PointerEvent): void => {
+      if (SHOW_AIM_RETICLE && e.pointerType === 'mouse') this.aimScreen = { x: e.clientX, y: e.clientY };
+    };
+    this.onPointerOut = (e: MouseEvent): void => {
+      if (e.relatedTarget === null) this.aimScreen = null;
+    };
+    window.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('mouseout', this.onPointerOut);
   }
+
+  private onPointerMove: (e: PointerEvent) => void;
+  private onPointerOut: (e: MouseEvent) => void;
 
   private onKeyDown: (e: KeyboardEvent) => void;
 
@@ -444,13 +460,14 @@ export class Game {
       menuOpen: this.menuOpen,
       online: this.lastRoom !== '',
       showInfo: this.showInfo,
+      touch: this.controls.coarse,
     };
   }
 
   private emit(): void {
     const snap = this.snapshot;
     this.tipText = this.screen === 'play'
-      ? this.tips.update({ frame: snap?.interpolatedRenderState ?? snap?.renderState, slot: snap?.localSlot ?? 0, nowMs: performance.now(), checkpointTotal: this.map?.checkpoints.length ?? 0, offline: this.lastRoom === '' })
+      ? this.tips.update({ frame: snap?.interpolatedRenderState ?? snap?.renderState, slot: snap?.localSlot ?? 0, nowMs: performance.now(), checkpointTotal: this.map?.checkpoints.length ?? 0, offline: this.lastRoom === '', scheme: this.controls.coarse ? 'touch' : 'keyboard' })
       : null;
     const s = this.state();
     for (const l of this.listeners) l(s);
@@ -615,7 +632,8 @@ export class Game {
         rematch: this.wantRematch,
       };
       // With the menu open the monster gets neutral input; an offline race pauses, an online one keeps running.
-      this.runner.applyInput(this.menuOpen ? base : this.controls.read(base));
+      const input = this.menuOpen ? base : this.controls.read(base);
+      this.runner.applyInput(input);
       if (!(this.menuOpen && this.lastRoom === '')) {
         const u0 = performance.now();
         this.runner.update(dt);
@@ -625,6 +643,8 @@ export class Game {
       }
     }
     const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    // The mouse aims: the reticle sits on the ground under the cursor (no firing yet).
+    this.view.setAim(this.screen === 'play' && !this.menuOpen && this.aimScreen !== null ? this.view.groundPoint(this.aimScreen.x, this.aimScreen.y) : null);
     const r0 = performance.now();
     this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders);
     this.perfRender += performance.now() - r0;
@@ -808,6 +828,8 @@ export class Game {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('pointermove', this.onPointerMove);
+    window.removeEventListener('mouseout', this.onPointerOut);
     this.unbindNames?.();
     cancelAnimationFrame(this.raf);
     if (this.backgroundTimer !== 0) window.clearInterval(this.backgroundTimer);

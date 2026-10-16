@@ -19,6 +19,8 @@ export interface TipContext {
   readonly checkpointTotal: number;
   /** Offline practice: tips replay every race. Online they show once per device. */
   readonly offline: boolean;
+  /** Which control scheme is in use, so the tips name the right keys. */
+  readonly scheme: 'touch' | 'keyboard';
 }
 
 /**
@@ -36,7 +38,6 @@ export class TipCoach {
   private lastPhase = '';
   /** Tips already shown in the current race (used instead of `seen` while offline). */
   private shownThisRace = new Set<string>();
-  private readonly touch = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
 
   async load(): Promise<void> {
     try {
@@ -99,9 +100,10 @@ export class TipCoach {
     if (frame.phase === 'COUNTDOWN') {
       this.offer({
         id: 'steer',
-        text: this.touch
-          ? 'Drag left or right on the left side of the screen to steer. Your monster drives by itself.'
-          : 'W to go, A and D to steer.',
+        text:
+          ctx.scheme === 'touch'
+            ? 'Drag left or right on the left side of the screen to steer. Your monster drives by itself.'
+              : 'W to go, A and D to steer.',
       });
     } else {
       const raceTicks = frame.phaseTicks;
