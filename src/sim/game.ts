@@ -45,6 +45,11 @@ import {
   WALL_HIT_MIN_SPEED_MS,
   MASS_UNIT,
   RESET_FREEZE_TICKS,
+  TIP_MIN_UP,
+  TIP_TICKS,
+  GETUP_FREEZE_TICKS,
+  GETUP_COOLDOWN_TICKS,
+  GETUP_HOP,
   RESET_HOLD_TICKS,
   RIDE_HEIGHT,
   STEER_FADE_SPEED,
@@ -67,6 +72,8 @@ export interface GameInput {
   readonly head: boolean;
   readonly legs: boolean;
   readonly reset: boolean;
+  /** Right a monster that has fallen on its side (only does anything while it is tipped over). */
+  readonly getUp: boolean;
   readonly ready: boolean;
   /** Always true from a connected client: announces that this slot is occupied (an empty slot sends the neutral input). */
   readonly present: boolean;
@@ -87,6 +94,7 @@ export const DEFAULT_INPUT: GameInput = {
   head: false,
   legs: false,
   reset: false,
+  getUp: false,
   ready: false,
   present: false,
   start: false,
@@ -128,6 +136,9 @@ export interface PlayerState {
   readonly spinLeft: number;
   readonly swing: Swing | null;
   readonly resetHold: number;
+  /** Consecutive ticks the monster has been tilted past upright. */
+  readonly tippedTicks: number;
+  readonly getUpReadyAt: number;
   readonly frozenUntil: number;
   /** Hits taken since the last part fell off. */
   readonly hits: number;
@@ -225,6 +236,8 @@ export interface PlayerView {
   readonly headCooldown: number;
   readonly swingPole: number; // -1 when not swinging
   readonly trailing: boolean;
+  /** Fallen on its side and waiting for the Get up button. */
+  readonly tipped: boolean;
   readonly partsLost: number;
   readonly partsGained: number;
   readonly partsStolen: number;
@@ -233,6 +246,8 @@ export interface PlayerView {
 }
 
 export interface GameProjection {
+  /** Id of the baked map (route) this room races on. */
+  readonly mapId: string;
   readonly frame: number;
   readonly phase: Phase;
   readonly phaseTicks: number; // ticks elapsed in the current phase
@@ -374,6 +389,8 @@ function newPlayer(slot: number): PlayerState {
     spinLeft: 0,
     swing: null,
     resetHold: 0,
+    tippedTicks: 0,
+    getUpReadyAt: 0,
     frozenUntil: 0,
     hits: 0,
     hitCooldownUntil: 0,
@@ -699,6 +716,28 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         resetHold = 0;
       }
 
+      // --- tipped over: right the monster in place (manual only: it stays down until the player asks) ---
+      const o = body.orientation ?? { x: 0, y: 0, z: 0, w: 1 };
+      const up = 1 - 2 * (o.x * o.x + o.z * o.z);
+      const tippedTicks = racing && p.finishTick < 0 && up < TIP_MIN_UP ? p.tippedTicks + 1 : 0;
+      let getUpReadyAt = p.getUpReadyAt;
+      if (racing && input.getUp && tippedTicks >= TIP_TICKS && frame >= getUpReadyAt) {
+        let fx = 2 * (o.x * o.z + o.w * o.y), fz = 1 - 2 * (o.x * o.x + o.y * o.y);
+        if (Math.hypot(fx, fz) < 0.2) {
+          // nose pointing at the sky or the ground: take the heading from the monster's left side instead
+          fx = 2 * (o.w * o.y - o.x * o.z);
+          fz = 1 - 2 * (o.y * o.y + o.z * o.z);
+        }
+        const upright = chassisBody(p.slot, p.build, body.x, body.z, Math.atan2(fx, fz));
+        respawns.push({ ...upright, vy: GETUP_HOP });
+        frozenUntil = frame + GETUP_FREEZE_TICKS;
+        getUpReadyAt = frame + GETUP_COOLDOWN_TICKS;
+        if (swing !== null) {
+          ropesToRemove.push(ropeId(p.slot));
+          swing = null;
+        }
+      }
+
       // --- vehicle controls ---
       const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
       const gripMul = slickGripMul(state.slicks, body.x, body.z);
@@ -735,6 +774,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         spinLeft,
         swing,
         resetHold,
+        tippedTicks,
+        getUpReadyAt,
         frozenUntil,
       };
       return p;
@@ -971,6 +1012,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       headCooldown: p.headCooldown,
       swingPole: p.swing === null ? -1 : p.swing.pole,
       trailing: p.trailLeft > 0,
+      tipped: p.tippedTicks >= TIP_TICKS,
       partsLost: p.partsLost,
       partsGained: p.partsGained,
       partsStolen: p.partsStolen,
@@ -981,6 +1023,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
   return {
     frame: state.frame,
     phase: state.phase,
+    mapId: prep.map.id,
     phaseTicks: state.frame - state.phaseStart,
     raceStart: state.raceStart,
     hostSlot,

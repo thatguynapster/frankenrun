@@ -29,7 +29,7 @@ function pilot(slot: number): GameInput {
   let best = progress[slot]!;
   while (best + 1 < polyline.length - 1 && Math.hypot(polyline[best + 1]!.x - v.x, polyline[best + 1]!.z - v.z) < 12) best += 1;
   progress[slot] = best;
-  const look = Math.max(10, v.speed * 0.9);
+  const look = Math.max(Number(process.env['LOOKMIN'] ?? 10), v.speed * 0.9);
   let target = polyline[polyline.length - 1]!;
   let acc = 0;
   for (let i = best; i + 1 < polyline.length; i += 1) {
@@ -96,6 +96,8 @@ function pilot(slot: number): GameInput {
   return { ...DEFAULT_INPUT, bodySel: BODY, legsSel: LEGS, armsSel: ARMS, headSel: HEAD, throttle, steer };
 }
 
+const RESET_AFTER = Number(process.env['RESET_AFTER'] ?? 0); // seconds stuck before the pilot holds Reset (0 = never)
+let slowTicks = 0, holdReset = 0, resets = 0, anchorX = 0, anchorZ = 0;
 const cpTimes: string[] = [];
 let stuck = 0, raceStart = -1, maxMs = 0, sumMs = 0, nTicks = 0;
 const allMs: number[] = [];
@@ -106,7 +108,16 @@ let winMs = 0, winN = 0;
 const frames = 30 * Number(process.env['SECS'] ?? 300);
 for (let f = 0; f < frames; f += 1) {
   const t0 = performance.now();
-  state = stepGame(state, [pilot(0), state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true } : DEFAULT_INPUT], prep);
+  // A human who is boxed in holds Reset: after RESET_AFTER seconds without moving, the pilot does the same.
+  let input0 = pilot(0);
+  const pv = projectGame(state, prep).players[0]!;
+  if (state.phase !== 'RACING' || Math.hypot(pv.x - anchorX, pv.z - anchorZ) > 8) { anchorX = pv.x; anchorZ = pv.z; slowTicks = 0; } else slowTicks += 1; // "stuck" = has not left an 8 m circle
+  if (RESET_AFTER > 0 && (slowTicks > RESET_AFTER * 30 || holdReset > 0)) {
+    if (holdReset === 0) { holdReset = 32; resets += 1; slowTicks = 0; }
+    holdReset -= 1;
+    input0 = { ...input0, reset: true };
+  }
+  state = stepGame(state, [input0, state.phase === 'BUILD' ? { ...DEFAULT_INPUT, ready: true, present: true, start: true } : DEFAULT_INPUT], prep);
   const ms = performance.now() - t0;
   maxMs = Math.max(maxMs, ms);
   if (f > 5) { sumMs += ms; nTicks += 1; allMs.push(ms); }
@@ -131,7 +142,7 @@ for (let f = 0; f < frames; f += 1) {
 }
 const p0 = state.players[0]!;
 console.log(`${mapId} (${LEGS ? 'legs' : 'no legs'}): ${prep.checkpoints.length} checkpoints, phase ${state.phase}, reached ${p0.nextCheckpoint}/${prep.checkpoints.length}`);
-console.log(`  ${cpTimes.join(' ')}`);
+console.log(`  ${cpTimes.join(' ')}${resets > 0 ? `  (resets used: ${resets})` : ''}`);
 console.log(p0.finishTick >= 0 ? `  FINISHED in ${((p0.finishTick - 90) / 30).toFixed(1)} s` : `  did NOT finish (stuck-seconds ${stuck})`);
 console.log(`  ticks over 25 ms: ${slow.length} of ${state.frame} (first ${slow.slice(0, 6).map((x) => `${x.f}:${x.ms.toFixed(0)}ms`).join(' ')})`);
 allMs.sort((a, b) => a - b);

@@ -3,7 +3,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GameProjection, PlayerView } from '../sim/game.js';
 import type { MapData } from '../sim/mapdata.js';
 import { getPreparedMap, type PreparedMap } from '../sim/world.js';
-import { CHASSIS_HALF, CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
+import { CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
+import { MonsterModel, createPartProp, type PartSlot } from './monsters/MonsterModel.js';
+import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
+import { makeIcons } from './partIcons.js';
 
 const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf, 0x5a6fbf, 0xbf5a5a]; // one per slot, up to 10
 const LEGS_COLOR = 0xff9a2e;
@@ -11,14 +14,22 @@ const ARMS_COLOR = 0xb04cff;
 const HEAD_COLOR = 0xb6ff3b;
 
 interface CarRig {
-  group: THREE.Group;
-  /** Torso mesh and seam, scaled/tinted per body. */
-  torso: THREE.Group;
-  /** One model per part id (index 0 is an empty slot and has no model). */
-  legs: (THREE.Group | undefined)[];
-  arms: (THREE.Group | undefined)[];
-  head: (THREE.Group | undefined)[];
+  model: MonsterModel;
   rope: THREE.Line;
+  /** Last seen part ids, to spot a part being lost. */
+  lastLegs: number;
+  lastArms: number;
+  lastHead: number;
+}
+
+/** A lost part tumbling away from its monster. */
+interface Debris {
+  group: THREE.Group;
+  vx: number;
+  vy: number;
+  vz: number;
+  spin: number;
+  age: number;
 }
 
 /** Renders a GameProjection. Reads state, never writes back into the simulation. */
@@ -27,6 +38,17 @@ export class RaceView {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 320);
   private cars: CarRig[] = [];
+  private readonly lobbyStage = new LobbyStage();
+  private lobbyOn = false;
+  private lobbyTime = 0;
+  /** How far the player has turned their own monster on the stage (drag to rotate), and when they last touched it. */
+  private lobbyYaw = 0;
+  private lobbyTouchedAt = -10;
+  private lobbyLabelList: { slot: number; x: number; y: number }[] = [];
+  private iconCache: Record<string, string> | undefined;
+  private readonly worldBackground = new THREE.Color(0x232b52);
+  private readonly lobbyBackground = new THREE.Color(0x16122e);
+  private debris: Debris[] = [];
   private rings: THREE.Mesh[] = [];
   private worldGroup: THREE.Group | undefined;
   private anchors: { x: number; z: number }[] = [];
@@ -71,6 +93,7 @@ export class RaceView {
     const moon = new THREE.DirectionalLight(0xeaf0ff, 2.6);
     moon.position.set(-60, 120, -40);
     this.scene.add(moon);
+    this.scene.add(this.lobbyStage.group);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -228,84 +251,7 @@ export class RaceView {
   }
 
   private makeCar(slot: number): CarRig {
-    const group = new THREE.Group();
-    const bodyColor = SLOT_COLORS[slot % SLOT_COLORS.length] ?? 0xffffff;
-    const lambert = (color: number): THREE.MeshLambertMaterial => new THREE.MeshLambertMaterial({ color, flatShading: true });
-    const torso = new THREE.Group();
-    torso.add(new THREE.Mesh(new THREE.BoxGeometry(CHASSIS_HALF.x * 2, CHASSIS_HALF.y * 2, CHASSIS_HALF.z * 2), lambert(bodyColor)));
-    // Stitches: a dark seam across the torso.
-    const seam = new THREE.Mesh(
-      new THREE.BoxGeometry(CHASSIS_HALF.x * 2 + 0.05, 0.08, 0.1),
-      new THREE.MeshBasicMaterial({ color: 0x151515 }),
-    );
-    seam.position.set(0, 0.1, 0);
-    torso.add(seam);
-    group.add(torso);
-
-    // Legs: 1 = Werewolf (four stout legs), 2 = Spider (eight thin legs splayed outwards).
-    const werewolf = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.95, 6), lambert(LEGS_COLOR));
-        leg.position.set(sx * 0.65, -0.45, sz * 0.9);
-        werewolf.add(leg);
-      }
-    }
-    const spider = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      for (const z of [-0.95, -0.32, 0.32, 0.95]) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 1.15, 5), lambert(0x3a2a1a));
-        leg.position.set(sx * 0.95, -0.4, z);
-        leg.rotation.z = -sx * 0.7;
-        spider.add(leg);
-      }
-    }
-
-    // Arms: 1 = Tentacles (two long purple capsules), 2 = Crab Claws (two red pincers).
-    const tentacles = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 1.1, 3, 6), lambert(ARMS_COLOR));
-      arm.rotation.x = Math.PI / 2;
-      arm.position.set(sx * 0.9, 0.1, 0.6);
-      tentacles.add(arm);
-    }
-    const claws = new THREE.Group();
-    for (const sx of [-1, 1]) {
-      const upper = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.8), lambert(0xd8452e));
-      upper.position.set(sx * 0.95, 0.1, 0.7);
-      claws.add(upper);
-      for (const side of [-1, 1]) {
-        const pincer = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.6, 5), lambert(0xe86a4a));
-        pincer.rotation.x = Math.PI / 2;
-        pincer.position.set(sx * 0.95 + side * 0.14, 0.1, 1.3);
-        claws.add(pincer);
-      }
-    }
-
-    // Head: 1 = Slime Gland (green blob), 2 = Jack-o'-Lantern (orange head with a dark carved face).
-    const slime = new THREE.Group();
-    const slimeMesh = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 8), lambert(HEAD_COLOR));
-    slimeMesh.position.set(0, 0.75, 0.2);
-    slime.add(slimeMesh);
-    const lantern = new THREE.Group();
-    const pumpkin = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), lambert(0xff8a1f));
-    pumpkin.scale.set(1.1, 0.9, 1.1);
-    pumpkin.position.set(0, 0.75, 0.2);
-    lantern.add(pumpkin);
-    for (const sx of [-1, 1]) {
-      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.05), new THREE.MeshBasicMaterial({ color: 0xffe84a }));
-      eye.position.set(sx * 0.18, 0.82, 0.7);
-      lantern.add(eye);
-    }
-    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.08, 0.05), new THREE.MeshBasicMaterial({ color: 0xffe84a }));
-    mouth.position.set(0, 0.62, 0.7);
-    lantern.add(mouth);
-
-    const legs = [undefined, werewolf, spider];
-    const arms = [undefined, tentacles, claws];
-    const head = [undefined, slime, lantern];
-    for (const g of [...legs, ...arms, ...head]) if (g) group.add(g);
-
+    const model = new MonsterModel(SLOT_COLORS[slot % SLOT_COLORS.length] ?? 0xffffff);
     const rope = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
       new THREE.LineBasicMaterial({ color: ARMS_COLOR }),
@@ -313,8 +259,42 @@ export class RaceView {
     rope.frustumCulled = false;
     rope.visible = false;
     this.scene.add(rope);
+    this.scene.add(model.root);
+    return { model, rope, lastLegs: 0, lastArms: 0, lastHead: 0 };
+  }
+
+  /** Throws a lost part off the monster: it tumbles, bounces once and shrinks away. */
+  private spawnDebris(slot: PartSlot, id: number, bodyId: number, p: PlayerView): void {
+    if (id === 0 || this.debris.length >= 24) return;
+    const group = createPartProp(slot, id, bodyId);
+    group.position.set(p.x, p.y + (slot === 'head' ? 1.1 : slot === 'arms' ? 0.5 : -0.4), p.z);
     this.scene.add(group);
-    return { group, torso, legs, arms, head, rope };
+    const a = Math.random() * Math.PI * 2;
+    this.debris.push({ group, vx: Math.cos(a) * 3 + Math.sin(p.qy * 2) * p.speed * 0.3, vy: 5 + Math.random() * 2, vz: Math.sin(a) * 3, spin: 4 + Math.random() * 4, age: 0 });
+  }
+
+  private updateDebris(dt: number): void {
+    for (let i = this.debris.length - 1; i >= 0; i -= 1) {
+      const d = this.debris[i]!;
+      d.age += dt;
+      d.vy -= 18 * dt;
+      d.group.position.x += d.vx * dt;
+      d.group.position.y += d.vy * dt;
+      d.group.position.z += d.vz * dt;
+      if (d.group.position.y < 0.3) {
+        d.group.position.y = 0.3;
+        d.vy = Math.abs(d.vy) * 0.35;
+        d.vx *= 0.6;
+        d.vz *= 0.6;
+      }
+      d.group.rotation.x += d.spin * dt;
+      d.group.rotation.z += d.spin * 0.6 * dt;
+      if (d.age > 2) d.group.scale.setScalar(Math.max(0.001, 1 - (d.age - 2) / 0.8));
+      if (d.age > 2.8) {
+        this.scene.remove(d.group);
+        this.debris.splice(i, 1);
+      }
+    }
   }
 
   /** Parts lying in the world: a spinning gem in the slot's colour on a tall translucent beam, visible from afar. */
@@ -358,18 +338,20 @@ export class RaceView {
     });
   }
 
-  private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase']): void {
+  private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase'], dt: number, time: number): void {
     // A monster is drawn while it has a body in the world, and as a build preview on the start grid while in the lobby.
-    rig.group.visible = p.present || (phase === 'BUILD' && p.joined);
-    rig.group.position.set(p.x, p.y, p.z);
-    rig.group.quaternion.set(p.qx, p.qy, p.qz, p.qw);
-    rig.legs.forEach((g, i) => g && (g.visible = i === p.build.legs));
-    rig.arms.forEach((g, i) => g && (g.visible = i === p.build.arms));
-    rig.head.forEach((g, i) => g && (g.visible = i === p.build.head));
-    if (p.build.head === 1) rig.head[1]?.children[0]?.scale.setScalar(p.trailing ? 1.25 : 1);
-    // The Bone Rattler is a smaller, paler frame than the Brute.
-    const small = p.build.body === 1;
-    rig.group.scale.setScalar(small ? 0.85 : 1);
+    rig.model.root.visible = p.present || (phase === 'BUILD' && p.joined);
+    const b = p.build;
+    if (phase !== 'BUILD') {
+      if (rig.lastLegs !== 0 && b.legs === 0) this.spawnDebris('legs', rig.lastLegs, b.body, p);
+      if (rig.lastArms !== 0 && b.arms === 0) this.spawnDebris('arms', rig.lastArms, b.body, p);
+      if (rig.lastHead !== 0 && b.head === 0) this.spawnDebris('head', rig.lastHead, b.body, p);
+    }
+    rig.lastLegs = b.legs;
+    rig.lastArms = b.arms;
+    rig.lastHead = b.head;
+    rig.model.setBuild(b);
+    rig.model.update(p, dt, time);
     if (p.swingPole >= 0) {
       const pole = this.anchors[p.swingPole];
       if (pole !== undefined) {
@@ -588,14 +570,98 @@ export class RaceView {
     this.scene.add(this.colliderLines);
   }
 
-  render(frame: GameProjection | undefined, localSlot: number, dtSeconds: number, showColliders = false): void {
-    this.updateColliderLines(frame, showColliders);
-    if (frame !== undefined) {
+  /** Switches the scene between the race world and the lobby stage. */
+  private setLobbyMode(on: boolean): void {
+    if (on === this.lobbyOn) return;
+    this.lobbyOn = on;
+    if (on && this.iconCache === undefined) this.iconCache = makeIcons(this.renderer);
+    this.lobbyStage.group.visible = on;
+    if (this.worldGroup) this.worldGroup.visible = !on;
+    this.scene.background = on ? this.lobbyBackground : this.worldBackground;
+    this.scene.fog = on ? null : new THREE.Fog(0x232b52, 50, 230);
+    for (const r of this.rings) r.visible = !on;
+    for (const p of this.pickupPool) p.group.visible = false;
+    for (const s of this.slickPool) s.visible = false;
+    if (on && this.lanternMesh) this.lanternMesh.visible = false;
+    if (on) this.camera.clearViewOffset();
+    else {
+      this.camera.clearViewOffset();
+      this.cameraReady = false; // the race camera snaps to the monster again
+    }
+  }
+
+  /** The lobby: monsters stand on the stage, the local player in front; names float over them. */
+  private renderLobby(frame: GameProjection, localSlot: number, dt: number): void {
+    const time = frame.frame / 30;
+    const standing = frame.players.filter((p) => p.joined && !p.bot);
+    const ordered = [...standing.filter((p) => p.slot === localSlot), ...standing.filter((p) => p.slot !== localSlot)];
+    const spots: { spot: ReturnType<typeof stageSpot>; ready: boolean }[] = [];
+    this.lobbyLabelList = [];
+    frame.players.forEach((p, i) => {
+      const rig = this.cars[i];
+      if (rig === undefined) return;
+      const k = ordered.findIndex((o) => o.slot === p.slot);
+      rig.rope.visible = false;
+      rig.model.root.visible = k >= 0;
+      if (k < 0) return;
+      const spot = stageSpot(k);
+      // the local monster can be turned by dragging; left alone for a couple of seconds it turns slowly by itself
+      const yaw = spot.yaw + (k === 0 ? this.lobbyYaw : 0);
+      // The model is updated facing forward and turned afterwards: a turning pose would make it shuffle its feet as if pivoting.
+      const pose = { x: spot.x, y: FLOOR_Y + 1, z: spot.z, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, swingPole: -1, trailing: false };
+      rig.model.setBuild(p.build);
+      rig.model.update(pose, dt, time);
+      rig.model.root.rotation.y = yaw;
+      spots.push({ spot, ready: p.ready || p.host });
+      const head = new THREE.Vector3(spot.x, FLOOR_Y + 4.3, spot.z).project(this.camera);
+      this.lobbyLabelList.push({ slot: p.slot, x: (head.x + 1) / 2, y: (1 - head.y) / 2 });
+    });
+    this.lobbyStage.setSpots(spots);
+    this.lobbyStage.update(time);
+    this.lobbyTime += dt;
+    if (this.lobbyTime - this.lobbyTouchedAt > 2.5) this.lobbyYaw += 0.45 * dt;
+    // The stage sits left of centre on wide screens (the pick panel takes the right), and above centre on tall ones.
+    const w = Math.max(1, this.container.clientWidth), h = Math.max(1, this.container.clientHeight);
+    if (w / h >= 1.2) this.camera.setViewOffset(w, h, w * 0.2, 0, w, h);
+    else this.camera.setViewOffset(w, h, 0, h * 0.2, w, h);
+    // Narrow screens see less sideways, so the camera backs off to keep the monsters in frame.
+    const back = Math.max(1, Math.min(2, 1.1 / (w / h)));
+    this.camera.position.set(0, STAGE_Y + 3.2 + (back - 1) * 1.5, 9.2 * back);
+    this.camera.lookAt(0, STAGE_Y + 2.0, 0);
+    this.camera.updateMatrixWorld();
+  }
+
+  /** Turns the local monster on the lobby stage by a drag of `dx` pixels (a full screen width is about a turn and a half). */
+  rotateLobby(dx: number): void {
+    this.lobbyYaw += (dx / Math.max(1, this.container.clientWidth)) * Math.PI * 3;
+    this.lobbyTouchedAt = this.lobbyTime;
+  }
+
+  /** Where each lobby monster's name tag goes, as fractions of the canvas (empty outside the lobby). */
+  lobbyLabels(): readonly { slot: number; x: number; y: number }[] {
+    return this.lobbyOn ? this.lobbyLabelList : [];
+  }
+
+  /** Pictures of every body and part, once they have been drawn. */
+  icons(): Readonly<Record<string, string>> | undefined {
+    return this.iconCache;
+  }
+
+  render(frame: GameProjection | undefined, localSlot: number, dtSeconds: number, showColliders = false, lobby = false): void {
+    this.updateColliderLines(frame, showColliders && !lobby);
+    if (frame !== undefined && lobby) {
+      while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
+      this.setLobbyMode(true);
+      this.renderLobby(frame, localSlot, dtSeconds);
+      this.updateDebris(dtSeconds);
+    } else if (frame !== undefined) {
+      this.setLobbyMode(false);
       while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
       frame.players.forEach((p, i) => {
         const rig = this.cars[i];
-        if (rig !== undefined) this.updateCar(rig, p, frame.phase);
+        if (rig !== undefined) this.updateCar(rig, p, frame.phase, dtSeconds, frame.frame / 30);
       });
+      this.updateDebris(dtSeconds);
       this.updateSlicks(frame);
       this.updatePickups(frame, frame.frame / 30);
       // A player with no monster in this race (late joiner, or left out of it) watches the race leader.

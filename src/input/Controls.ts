@@ -7,7 +7,7 @@ export class Controls {
   private touchBrake = false;
   private touchArms = false;
   private touchHead = false;
-  private touchLegs = false;
+  private touchGetUp = false;
   private touchReset = false;
   // A phone or tablet (coarse primary pointer) drives automatically from the start; keyboards need W.
   private touchActive = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
@@ -41,9 +41,9 @@ export class Controls {
     this.touchActive = true;
     this.touchHead = on;
   }
-  setTouchLegs(on: boolean): void {
+  setTouchGetUp(on: boolean): void {
     this.touchActive = true;
-    this.touchLegs = on;
+    this.touchGetUp = on;
   }
   setTouchReset(on: boolean): void {
     this.touchActive = true;
@@ -78,7 +78,7 @@ export class Controls {
       steer: Math.round((-screenSteer * 100) / 10) * 10,
       arms: this.down('KeyJ') || this.touchArms,
       head: this.down('KeyK') || this.touchHead,
-      legs: this.down('Space') || this.touchLegs,
+      getUp: this.down('Space') || this.touchGetUp,
       reset: this.down('KeyR') || this.touchReset,
     };
   }

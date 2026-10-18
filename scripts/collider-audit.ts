@@ -1,8 +1,9 @@
 // Audits which rendered buildings have no collider, and why:  node scripts/run-ts.mjs scripts/collider-audit.ts
 import { readFileSync } from 'node:fs';
 import type { MapData } from '../src/sim/mapdata.ts';
-const map = JSON.parse(readFileSync('bake/out/route1.map.json', 'utf8')) as MapData;
-const poly = (JSON.parse(readFileSync('bake/cache/route1-corridor.json', 'utf8')) as { polyline: { x: number; z: number }[] }).polyline;
+const ID = process.env['MAP'] ?? 'route1';
+const map = JSON.parse(readFileSync(`bake/out/${ID}.map.json`, 'utf8')) as MapData;
+const poly = (JSON.parse(readFileSync(`bake/cache/${ID}-corridor.json`, 'utf8')) as { polyline: { x: number; z: number }[] }).polyline;
 const area = (p: readonly number[]): number => { let s = 0; for (let i = 0; i < p.length; i += 2) { const j = (i + 2) % p.length; s += p[i]! * p[j + 1]! - p[j]! * p[i + 1]!; } return Math.abs(s) / 2 / 100; };
 const nearRoute = (b: { pts: readonly number[] }): boolean => { const cx = b.pts.filter((_, i) => i % 2 === 0).reduce((a, v) => a + v, 0) / (b.pts.length / 2) / 10, cz = b.pts.filter((_, i) => i % 2 === 1).reduce((a, v) => a + v, 0) / (b.pts.length / 2) / 10; return poly.some((p, i) => { const q = poly[i + 1]; if (!q) return false; const dx = q.x - p.x, dz = q.z - p.z, l2 = dx * dx + dz * dz; const t = l2 ? Math.max(0, Math.min(1, ((cx - p.x) * dx + (cz - p.z) * dz) / l2)) : 0; return Math.hypot(cx - p.x - t * dx, cz - p.z - t * dz) < 60; }); };
 let withHull = 0, without = 0, areaWith = 0, areaWithout = 0, nearWithout = 0, nearAreaWithout = 0, nearTotal = 0;

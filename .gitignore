@@ -24,3 +24,4 @@ rundot/docs/
 # Map bake cache (raw OSM downloads, never shipped)
 bake/cache/
 bake/prof/
+docs/feature-tracker.md

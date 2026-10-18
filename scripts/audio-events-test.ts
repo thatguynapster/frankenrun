@@ -15,7 +15,7 @@ const monster = (slot: number, over: Partial<PlayerView> = {}): PlayerView =>
   ({
     slot, build: { body: 0, legs: 1, arms: 1, head: 1 }, ready: true, present: true, joined: true, inRace: true, host: slot === 0, bot: false,
     x: slot * 10, y: 1, z: 0, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, nextCheckpoint: 0, finishTick: -1, armsCooldown: 0, headCooldown: 0,
-    swingPole: -1, trailing: false, partsLost: 0, partsGained: 0, partsStolen: 0, lastLossTick: -1000, rematch: false, ...over,
+    swingPole: -1, trailing: false, tipped: false, partsLost: 0, partsGained: 0, partsStolen: 0, lastLossTick: -1000, rematch: false, ...over,
   }) as PlayerView;
 const frame = (n: number, phase: GameProjection['phase'], phaseTicks: number, players: PlayerView[]): GameProjection =>
   ({ frame: n, phase, phaseTicks, raceStart: 0, hostSlot: 0, players, slicks: [], pickups: [], finishOrder: [], activeCells: [] }) as unknown as GameProjection;

@@ -1,3 +1,5 @@
+import { ROUTES, routeInfo } from './routes.js';
+import { SHOW_LEADERBOARD, formatTime } from './leaderboard.js';
 import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type Graphics, type UiState } from './Game';
@@ -51,6 +53,93 @@ function App() {
 }
 
 function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: string; setCode: (v: string) => void }) {
+  if (ui.screen === 'title' && ui.invite !== null) {
+    return (
+      <div className="panel center">
+        <h1 className="title small">{ui.invite.host ? `${ui.invite.host} invited you` : 'You are invited'}</h1>
+        <p className="muted">
+          Join the race in room <b>{ui.invite.room}</b>?
+        </p>
+        <div className="row">
+          <button className="btn primary" onClick={() => void game.acceptInvite()}>
+            Join race
+          </button>
+          <button className="btn" onClick={() => game.declineInvite()}>
+            Not now
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (ui.screen === 'title' && ui.board !== null) {
+    const b = ui.board;
+    return (
+      <div className="panel center routes">
+        <h1 className="title small">Best times</h1>
+        <div className="chips">
+          {ROUTES.map((r) => (
+            <button key={r.id} className={`chip ${b.route === r.id ? 'on' : ''}`} onClick={() => game.openBoard(r.id, b.period)}>
+              {r.name}
+            </button>
+          ))}
+        </div>
+        <div className="chips">
+          <button className={`chip ${b.period === 'alltime' ? 'on' : ''}`} onClick={() => game.openBoard(b.route, 'alltime')}>
+            All time
+          </button>
+          <button className={`chip ${b.period === 'weekly' ? 'on' : ''}`} onClick={() => game.openBoard(b.route, 'weekly')}>
+            This week
+          </button>
+        </div>
+        {b.loading && <p className="muted">Loading...</p>}
+        {!b.loading && b.data === null && <p className="muted">The leaderboard is not available right now.</p>}
+        {b.data !== null && b.data.entries.length === 0 && <p className="muted">No times yet. Be the first to finish this route!</p>}
+        {b.data !== null && b.data.entries.length > 0 && (
+          <ol className="board">
+            {b.data.entries.map((e) => (
+              <li key={e.rank} className={e.mine ? 'mine' : ''}>
+                <span className="rk">{e.rank}</span>
+                <span className="nm">{e.name}</span>
+                <span className="tm">{formatTime(e.ms)}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {b.data !== null && b.data.myRank !== null && <p className="muted small">Your rank: {b.data.myRank} of {b.data.total}</p>}
+        <button className="btn" onClick={() => game.closeBoard()}>
+          Back
+        </button>
+      </div>
+    );
+  }
+  if (ui.screen === 'title' && ui.picking !== null) {
+    return (
+      <div className="panel center routes">
+        <h1 className="title small">{ui.picking === 'host' ? 'Pick the route for your race' : 'Pick a route to practise'}</h1>
+        <div className="route-carousel">
+          <button className="arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
+            ‹
+          </button>
+          <div className="route-list">
+            {ROUTES.slice(ui.routeOffset, ui.routeOffset + 3).map((r) => (
+              <button key={r.id} className="route" onClick={() => void game.startOn(r.id)}>
+                <img src={`route-previews/${r.id}.svg`} alt={`Map of ${r.name}`} draggable={false} />
+                <b>{r.name}</b>
+                <span className="km">{r.km.toFixed(1)} km</span>
+                <small>{r.blurb}</small>
+              </button>
+            ))}
+          </div>
+          <button className="arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
+            ›
+          </button>
+        </div>
+        <button className="btn" onClick={() => game.cancelRoutePick()}>
+          Back
+        </button>
+      </div>
+    );
+  }
   if (ui.screen === 'title') {
     return (
       <div className="panel center">
@@ -58,11 +147,17 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
         <p className="muted">Stitch a monster. Race it. Steal the win.</p>
         <button className="btn primary" onClick={() => void game.quick()}>
           Quick match
+          <small className="sub">Today: {routeInfo(ui.featuredRoute)?.name}</small>
         </button>
-        <button className="btn" onClick={() => void game.practice()}>
+        {SHOW_LEADERBOARD && (
+          <button className="btn" onClick={() => game.openBoard()}>
+            Best times
+          </button>
+        )}
+        <button className="btn" onClick={() => game.chooseRoute('practice')}>
           Practice (offline)
         </button>
-        <button className="btn" onClick={() => void game.host()}>
+        <button className="btn" onClick={() => game.chooseRoute('host')}>
           Host private race
         </button>
         <div className="row">
@@ -199,18 +294,29 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
 /** The control keys for the scheme in use. */
 function keysHelp(ui: UiState): string {
   if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities · hold Reset to return to the last checkpoint';
-  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset · Esc menu';
+  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
-function ResultsPanel({ game, frame, meSlot, mode, banner, names }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>> }) {
+function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission'] }) {
   const me = frame.players[meSlot];
   const nameOf = (slot: number): string => names[slot] ?? `Player ${slot + 1}`;
   const racers = frame.players.filter((p) => p.inRace && !p.bot);
   return (
     <div className="panel center results">
       <h2 className="title small">{mode === 'finished' ? 'Race complete!' : 'Results'}</h2>
+      {frame.mapId && <p className="muted small">{routeInfo(frame.mapId)?.name ?? frame.mapId}</p>}
       {mode === 'finished' && me && <p className="muted small">Your time: {((me.finishTick - frame.raceStart) / TICK).toFixed(1)}s. Waiting for the others to finish...</p>}
       {banner && <p className="muted small">{banner}</p>}
+      {shareNote && <p className="muted small">{shareNote}</p>}
+      {SHOW_LEADERBOARD && sub && sub.route === frame.mapId && me && me.finishTick >= 0 && (
+        <p className="muted small">
+          {sub.result === null
+            ? 'Recording your time...'
+            : sub.result.accepted
+              ? `New best time ${formatTime(sub.ms)}${sub.result.rank !== null ? ` · rank ${sub.result.rank} on ${routeInfo(frame.mapId)?.name ?? 'this route'}` : ''}`
+              : `Your time ${formatTime(sub.ms)} is not your best on this route`}
+        </p>
+      )}
       <ol>
         {frame.finishOrder.map((slot, i) => {
           const t = frame.players[slot]?.finishTick ?? 0;
@@ -237,6 +343,11 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names }: { game: Game
             {mode === 'stale' ? 'Join next race' : 'Rematch'}
           </button>
         )}
+        {me && me.finishTick >= 0 && (
+          <button className="btn" onClick={() => void game.shareMyResult()}>
+            Share result
+          </button>
+        )}
         <button className={`btn ${mode === 'finished' ? 'primary' : ''}`} onClick={() => game.leave()}>
           Back to menu
         </button>
@@ -246,6 +357,7 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names }: { game: Game
 }
 
 function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
+  const dragX = useRef<number | null>(null); // the pointer position while the lobby monster is being turned
   const frame = ui.frame;
   const me = frame?.players[ui.localSlot];
   if (!frame || !me) {
@@ -267,7 +379,6 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   if (frame.phase === 'BUILD' || me.rematch) {
     const lobby = lobbyStatus(frame);
     const isHost = me.host;
-    const racersNow = frame.players.filter((p) => p.joined && !p.bot);
     const lobbyHint = isHost
       ? lobby.count < 2
         ? 'Waiting for another player to join. Share the room code.'
@@ -275,87 +386,105 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           ? `Waiting for ${lobby.notReady} ${lobby.notReady === 1 ? 'player' : 'players'} to get ready.`
           : 'Everyone is ready. Start when you like.'
       : 'Waiting for the host to start the race.';
+    const tabs = [
+      { key: 'body', label: 'Body', items: BODIES.map((x, i) => ({ id: i, name: x.name, blurb: i === 0 ? 'Heavy: takes 3 hits before a part falls off' : 'Light and quick: loses a part on the first hit' })) },
+      { key: 'legs', label: 'Legs', items: LEG_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
+      { key: 'arms', label: 'Arms', items: ARM_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
+      { key: 'head', label: 'Head', items: HEAD_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
+    ] as const;
+    const tab = tabs.find((t) => t.key === ui.lobbyTab) ?? tabs[0];
+    const locked = tab.key === 'body' ? ui.ready : ui.ready && !isHost;
     return (
-      <div className="panel build">
-        <h2 className="title small">Build your monster</h2>
-        {ui.roomCode && (
-          <p className="room">
-            Room code <b>{ui.roomCode}</b> · {ui.occupied}/{ui.maxPlayers} players
-          </p>
-        )}
-        {raceOn && <p className="muted small">A race is in progress. You will be in the next one, once the host starts it.</p>}
-        {frame.phase === 'RESULTS' && lobby.members.length < frame.players.filter((p) => p.joined).length && (
-          <p className="muted small">Other players are still looking at the results. The host can start without them.</p>
-        )}
-        <div className="lobby-list">
-          {racersNow.map((p) => {
-            const inLobby = frame.phase === 'BUILD' || p.rematch;
-            const label = !inLobby ? (p.inRace && raceOn ? 'racing' : 'viewing results') : p.host ? 'host' : p.ready ? 'ready' : 'choosing';
+      <div className="panel lobby">
+        <div
+          className="lobby-drag"
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            dragX.current = e.clientX;
+          }}
+          onPointerMove={(e) => {
+            if (dragX.current === null) return;
+            game.rotateLobby(e.clientX - dragX.current);
+            dragX.current = e.clientX;
+          }}
+          onPointerUp={() => {
+            dragX.current = null;
+          }}
+          onPointerCancel={() => {
+            dragX.current = null;
+          }}
+        />
+        <div className="lobby-names">
+          {ui.labels.map((l) => {
+            const p = frame.players[l.slot];
+            const inLobby = frame.phase === 'BUILD' || p?.rematch === true;
             return (
-              <span key={p.slot} className={`lobby-player ${inLobby ? (p.host || p.ready ? 'ready' : '') : 'away'}`}>
-                {nameOf(p.slot)}
-                {p.slot === me.slot ? ' (you)' : ''} · {label}
+              <span key={l.slot} className={`name-tag ${p?.host || p?.ready ? 'ready' : ''} ${inLobby ? '' : 'away'}`} style={{ left: `${l.x * 100}%`, top: `${l.y * 100}%` }}>
+                {nameOf(l.slot)}
+                {l.slot === me.slot ? ' (you)' : ''}
+                {p?.host ? ' ★' : ''}
               </span>
             );
           })}
         </div>
-        <div className="build-grid">
-        <div className="pickers">
-        <div className="picker">
-          <b>Body</b>
-          <div className="chips">
-            {BODIES.map((body, i) => (
-              <button key={body.name} className={`chip ${ui.build.body === i ? 'on' : ''}`} disabled={ui.ready} onClick={() => pick('body', i)}>
-                {body.name}
+        <div className="lobby-side">
+          <div className="lobby-head">
+            <div>
+              <h2 className="title small">Stitch your monster</h2>
+              {frame.mapId && <p className="muted small">Route: {routeInfo(frame.mapId)?.name ?? frame.mapId}</p>}
+            </div>
+            {ui.roomCode && (
+              <p className="room">
+                Room <b>{ui.roomCode}</b> · {ui.occupied}/{ui.maxPlayers}
+                <button className="chip share" onClick={() => void game.shareRoomLink()}>
+                  Share link
+                </button>
+              </p>
+            )}
+          </div>
+          {ui.shareNote && <p className="muted small">{ui.shareNote}</p>}
+          {raceOn && <p className="muted small">A race is in progress. You will be in the next one, once the host starts it.</p>}
+          {frame.phase === 'RESULTS' && lobby.members.length < frame.players.filter((p) => p.joined).length && (
+            <p className="muted small">Other players are still looking at the results. The host can start without them.</p>
+          )}
+          <div className="tabs">
+            {tabs.map((t) => (
+              <button key={t.key} className={`tab ${t.key} ${tab.key === t.key ? 'on' : ''}`} onClick={() => game.setLobbyTab(t.key)}>
+                {t.label}
               </button>
             ))}
           </div>
-        </div>
-        {(
-          [
-            ['legs', 'Legs', LEG_PARTS],
-            ['arms', 'Arms', ARM_PARTS],
-            ['head', 'Head', HEAD_PARTS],
-          ] as const
-        ).map(([key, label, parts]) => (
-          <div className={`picker ${key}`} key={key}>
-            <b>{label}</b>
-            <div className="chips">
-              {parts.map((part, i) => (
-                <button key={part.name} className={`chip ${ui.build[key] === i ? 'on' : ''}`} disabled={ui.ready && !isHost} onClick={() => pick(key, i)}>
-                  {part.name}
-                </button>
-              ))}
-            </div>
-            <small>{parts[ui.build[key]]?.blurb}</small>
+          <div className="option-grid">
+            {tab.items.map((item) => (
+              <button key={item.name} className={`option ${tab.key} ${ui.build[tab.key] === item.id ? 'on' : ''}`} disabled={locked} onClick={() => pick(tab.key, item.id)}>
+                {ui.icons[`${tab.key}:${item.id}`] ? <img src={ui.icons[`${tab.key}:${item.id}`]} alt="" draggable={false} /> : <span className="icon-fallback" />}
+                <b>{item.name}</b>
+              </button>
+            ))}
           </div>
-        ))}
-        </div>
-        <div className="side">
-        <div className="stats">
-          <StatBar label="Top speed" value={stats.topKmh} max={110} text={`${stats.topKmh} km/h`} />
-          <StatBar label="Acceleration" value={stats.accel} max={1.7} />
-          <StatBar label="Grip" value={stats.grip} max={1.8} />
-          <StatBar label="Durability" value={stats.hits} max={3} text={`${stats.hits} ${stats.hits === 1 ? 'hit' : 'hits'}`} />
-        </div>
-        <p className="muted small">{lobbyHint}</p>
-        <div className="row">
-          {isHost ? (
-            <button className="btn primary" disabled={!lobby.canStart} onClick={() => game.startRace()}>
-              Start race
+          <p className="blurb">{tab.items[ui.build[tab.key]]?.blurb}</p>
+          <div className="stats compact">
+            <StatBar label="Top speed" value={stats.topKmh} max={110} text={`${stats.topKmh} km/h`} />
+            <StatBar label="Acceleration" value={stats.accel} max={1.7} />
+            <StatBar label="Grip" value={stats.grip} max={1.8} />
+            <StatBar label="Durability" value={stats.hits} max={3} text={`${stats.hits} ${stats.hits === 1 ? 'hit' : 'hits'}`} />
+          </div>
+          <p className="muted small">{lobbyHint}</p>
+          <div className="row">
+            {isHost ? (
+              <button className="btn primary" disabled={!lobby.canStart} onClick={() => game.startRace()}>
+                Start race
+              </button>
+            ) : (
+              <button className="btn primary" onClick={() => game.setReady(!ui.ready)}>
+                {ui.ready ? 'Ready (tap to cancel)' : 'Ready'}
+              </button>
+            )}
+            <button className="btn" onClick={() => game.leave()}>
+              Leave
             </button>
-          ) : (
-            <button className="btn primary" onClick={() => game.setReady(!ui.ready)}>
-              {ui.ready ? 'Ready (tap to cancel)' : 'Ready'}
-            </button>
-          )}
-          <button className="btn" onClick={() => game.leave()}>
-            Leave
-          </button>
+          </div>
         </div>
-        </div>
-        </div>
-        <p className="muted small">{keysHelp(ui)}</p>
       </div>
     );
   }
@@ -364,7 +493,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   // started): they keep the last results they saw and can join the next race.
   if (raceOn && !me.inRace) {
     if (ui.cachedResults) {
-      return <ResultsPanel game={game} names={ui.names} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
+      return <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
     }
     return (
       <div className="panel center">
@@ -422,6 +551,17 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         )}
         {frame.phase === 'COUNTDOWN' && <div className="big">{Math.max(1, Math.ceil((90 - frame.phaseTicks) / TICK))}</div>}
         {frame.phase === 'RACING' && frame.phaseTicks < 30 && <div className="big">GO!</div>}
+        {me.tipped && frame.phase === 'RACING' && me.finishTick < 0 && (
+          <button
+            className="getup"
+            onPointerDown={() => game.controls.setTouchGetUp(true)}
+            onPointerUp={() => game.controls.setTouchGetUp(false)}
+            onPointerLeave={() => game.controls.setTouchGetUp(false)}
+          >
+            Get up
+            {!ui.touch && <small>Space</small>}
+          </button>
+        )}
         <div className="abilities">
           <AbilityButton
             label="Tentacles"
@@ -462,7 +602,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         </div>
       </div>
       {(frame.phase === 'RESULTS' || me.finishTick >= 0) && (
-        <ResultsPanel game={game} names={ui.names} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
+        <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
       )}
       {ui.tip && me.finishTick < 0 && frame.phase !== 'RESULTS' && (
         <button className="tip" onClick={() => game.dismissTip()}>

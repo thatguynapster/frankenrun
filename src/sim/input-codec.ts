@@ -8,6 +8,7 @@ const codec = defineSyncplayInputCodec<GameInput>({
   head: { kind: 'boolean' },
   legs: { kind: 'boolean' },
   reset: { kind: 'boolean' },
+  getUp: { kind: 'boolean' },
   ready: { kind: 'boolean' },
   present: { kind: 'boolean' },
   start: { kind: 'boolean' },

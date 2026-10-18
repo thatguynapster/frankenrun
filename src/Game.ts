@@ -2,12 +2,15 @@ import type { SyncplayRunnerSnapshot } from '@series-inc/rundot-syncplay/browser
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Controls } from './input/Controls.js';
 import { ensureMap } from './net/mapLoader.js';
+import { SHOW_LEADERBOARD, loadBoard, submitTime, type Board, type BoardPeriod, type Submission } from './leaderboard.js';
+import { readInvite, shareResult, shareRoom, type Invite } from './share.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
 import { ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
-import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts.js';
+import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS, TICK_RATE } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
-import { DEFAULT_MAP } from './sim/runtime.js';
+import { ROUTES, featuredRoute } from './routes.js';
+import { getPreparedMap } from './sim/world.js';
 import { TipCoach } from './tips.js';
 import { AudioEngine, type AudioSettings, type Scene } from './audio/engine.js';
 import { AudioEvents } from './audio/events.js';
@@ -73,6 +76,26 @@ export interface UiState {
   /** Gametags by slot (own tag from the profile, others relayed through the room). */
   readonly names: Readonly<Record<number, string>>;
   readonly menuOpen: boolean;
+  /** Which group of the lobby's pick grid is showing. */
+  readonly lobbyTab: 'body' | 'legs' | 'arms' | 'head';
+  /** Where each lobby monster's name tag goes (fractions of the screen). */
+  readonly labels: readonly { readonly slot: number; readonly x: number; readonly y: number }[];
+  /** Pictures of the bodies and parts, keyed like `legs:1` (empty until drawn). */
+  readonly icons: Readonly<Record<string, string>>;
+  /** The leaderboard screen on the title, or null when it is closed. */
+  readonly board: { readonly route: string; readonly period: BoardPeriod; readonly data: Board | null; readonly loading: boolean } | null;
+  /** How this player's latest finish went on the leaderboard (shown on the results screen), or null. */
+  readonly lastSubmission: { readonly route: string; readonly ms: number; readonly result: Submission | null } | null;
+  /** Set while the title screen is asking which route to race. */
+  readonly picking: 'practice' | 'host' | null;
+  /** Index of the first of the three routes shown in the picker. */
+  readonly routeOffset: number;
+  /** Quick match's route of the day. */
+  readonly featuredRoute: string;
+  /** A room a friend invited this player to (from a share link), waiting for the player to accept or decline. */
+  readonly invite: Invite | null;
+  /** Short feedback after pressing a Share button (empty when there is none). */
+  readonly shareNote: string;
   /** True in an online room (the game keeps running while the menu is open). */
   readonly online: boolean;
   /** Show the performance readout on screen. */
@@ -138,6 +161,16 @@ export class Game {
   private error = '';
   private errorDetail = '';
   private lastRoom = '';
+  private invite: Invite | null = null;
+  private picking: 'practice' | 'host' | null = null;
+  private routeOffset = 0;
+  private lobbyTab: UiState['lobbyTab'] = 'body';
+  private board: UiState['board'] = null;
+  private boardRequest = 0;
+  private submittedKey = '';
+  private lastSubmission: UiState['lastSubmission'] = null;
+  private shareNote = '';
+  private shareNoteTimer = 0;
   private map: MapData | undefined;
   private build: Build = DEFAULT_BUILD;
   private ready = false;
@@ -197,6 +230,7 @@ export class Game {
     this.unsubscribe = this.runner.subscribe((snap) => {
       this.snapshot = snap;
       if (snap.roomCode) this.lastRoom = snap.roomCode;
+      this.syncMap(snap.renderState?.mapId);
       if (snap.status === 'error' && this.screen !== 'connecting') {
         if (this.screen === 'play') this.armAutoRejoin();
         this.screen = 'error';
@@ -211,6 +245,7 @@ export class Game {
     void this.tips.load();
     void this.loadSettings();
     void this.loadProfile();
+    void this.checkInvite();
     this.audio.setChangeListener(() => this.emit());
     this.watchVisibility();
     this.onKeyDown = (e: KeyboardEvent): void => {
@@ -450,6 +485,16 @@ export class Game {
     const snap = this.snapshot;
     const frame = snap?.interpolatedRenderState ?? snap?.renderState;
     return {
+      invite: this.invite,
+      labels: this.view.lobbyLabels(),
+      icons: this.view.icons() ?? {},
+      lobbyTab: this.lobbyTab,
+      picking: this.picking,
+      routeOffset: this.routeOffset,
+      board: this.board,
+      lastSubmission: this.lastSubmission,
+      featuredRoute: featuredRoute().id,
+      shareNote: this.shareNote,
       screen: this.screen,
       status: snap?.status ?? 'offline',
       roomCode: snap?.roomCode ?? '',
@@ -641,6 +686,7 @@ export class Game {
       // The rematch request is sent until the room has taken it (build phase) or this player is in the next race.
       if (current?.phase === 'BUILD' || (me?.inRace === true && (current?.phase === 'COUNTDOWN' || current?.phase === 'RACING'))) this.wantRematch = false;
       this.shareName(now);
+      this.submitFinish(current);
       const base = {
         ...DEFAULT_INPUT,
         present: true, // a connected client always announces itself, so the room can tell occupied slots from empty ones
@@ -669,7 +715,8 @@ export class Game {
     // The mouse aims: the reticle sits on the ground under the cursor (no firing yet).
     this.view.setAim(this.screen === 'play' && !this.menuOpen && this.aimScreen !== null ? this.view.groundPoint(this.aimScreen.x, this.aimScreen.y) : null);
     const r0 = performance.now();
-    this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders);
+    const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
+    this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
     this.perfRender += performance.now() - r0;
     this.perfFrames += 1;
     if (dt > this.perfMaxFrame) this.perfMaxFrame = dt;
@@ -744,15 +791,28 @@ export class Game {
     this.audio.setSettings(patch);
   }
 
-  private async enter(start: () => Promise<void>): Promise<void> {
+  /** Shows the map the room is racing on (a joiner learns it from the room, not from the menu). */
+  private syncMap(id: string | undefined): void {
+    if (id === undefined || this.map?.id === id) return;
+    try {
+      this.map = getPreparedMap(id).map;
+      this.view.setMap(this.map);
+    } catch {
+      // not loaded (should not happen: every route is loaded before a room is joined)
+    }
+  }
+
+  /** Loads the routes a session may need (all of them when joining, since the room decides the route). */
+  private async enter(start: () => Promise<void>, maps: readonly string[] = ROUTES.map((r) => r.id)): Promise<void> {
     this.screen = 'connecting';
     this.error = '';
     this.ready = false;
     this.emit();
     try {
       // The map must be loaded and digest-verified before any session starts: it is a deterministic input.
-      this.map = await ensureMap(DEFAULT_MAP);
-      this.view.setMap(this.map);
+      const loaded = await Promise.all(maps.map((id) => ensureMap(id)));
+      this.map = loaded.length === 1 ? loaded[0] : undefined;
+      if (this.map) this.view.setMap(this.map);
       await withTimeout(start(), CONNECT_TIMEOUT_MS, () => this.runner.stop());
       this.bindNames();
       this.audioEvents.reset();
@@ -765,16 +825,123 @@ export class Game {
     this.emit();
   }
 
-  practice(): Promise<void> {
-    return this.enter(() => startPractice(this.runner));
+  /** Reads the launch link once at start: a share link to a room becomes an invitation the player confirms. */
+  async checkInvite(): Promise<void> {
+    const invite = await readInvite();
+    if (invite !== null && this.screen === 'title') {
+      this.invite = invite;
+      this.emit();
+    }
   }
-  quick(): Promise<void> {
-    return this.enter(() => quickMatch(this.runner));
+  acceptInvite(): Promise<void> {
+    const invite = this.invite;
+    this.invite = null;
+    return invite === null ? Promise.resolve() : this.join(invite.room);
   }
-  host(): Promise<void> {
-    return this.enter(async () => {
-      await hostRace(this.runner);
+  declineInvite(): void {
+    this.invite = null;
+    this.emit();
+  }
+
+  private note(text: string, ms = 8000): void {
+    this.shareNote = text;
+    window.clearTimeout(this.shareNoteTimer);
+    this.shareNoteTimer = window.setTimeout(() => {
+      this.shareNote = '';
+      this.emit();
+    }, ms);
+    this.emit();
+  }
+  async shareRoomLink(): Promise<void> {
+    const code = this.snapshot?.roomCode ?? '';
+    if (code === '') return;
+    const out = await shareRoom(code, this.ownName);
+    this.note(out.ok ? 'Invite link ready: send it to a friend' : `Could not create the link: ${out.error}`);
+  }
+  async shareMyResult(): Promise<void> {
+    const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    const results = frame?.phase === 'RESULTS' ? frame : this.lastResults;
+    const me = results?.players[this.snapshot?.localSlot ?? 0];
+    if (results === undefined || me === undefined || me.finishTick < 0) return;
+    const place = results.finishOrder.indexOf(me.slot) + 1;
+    const racers = results.players.filter((p) => p.inRace && !p.bot).length;
+    const out = await shareResult({ place, racers, seconds: (me.finishTick - results.raceStart) / TICK_RATE, partsLost: me.partsLost, partsStolen: me.partsStolen });
+    this.note(out.ok ? 'Result link ready: send it to a friend' : `Could not create the link: ${out.error}`);
+  }
+
+  /** Records the player's finish time once per race, a moment after it happens so a late rollback cannot change it. */
+  private submitFinish(frame: GameProjection | undefined): void {
+    const me = frame?.players[this.snapshot?.localSlot ?? 0];
+    if (!SHOW_LEADERBOARD || frame === undefined || me === undefined || me.finishTick < 0 || !me.inRace || frame.frame < me.finishTick + 30) return;
+    const key = `${frame.mapId}:${frame.raceStart}:${me.finishTick}`;
+    if (key === this.submittedKey) return;
+    this.submittedKey = key;
+    const ms = ((me.finishTick - frame.raceStart) * 1000) / TICK_RATE;
+    this.lastSubmission = { route: frame.mapId, ms, result: null };
+    void submitTime(frame.mapId, ms, { online: this.lastRoom !== '', legs: me.build.legs, arms: me.build.arms, head: me.build.head, body: me.build.body }).then((result) => {
+      this.lastSubmission = { route: frame.mapId, ms, result };
+      this.emit();
     });
+  }
+
+  openBoard(route: string = ROUTES[0]!.id, period: BoardPeriod = 'alltime'): void {
+    const request = (this.boardRequest += 1);
+    this.board = { route, period, data: null, loading: true };
+    this.emit();
+    void loadBoard(route, period).then((data) => {
+      if (request !== this.boardRequest || this.board === null) return;
+      this.board = { route, period, data, loading: false };
+      this.emit();
+    });
+  }
+  closeBoard(): void {
+    this.boardRequest += 1;
+    this.board = null;
+    this.emit();
+  }
+
+  /** Title screen: Practice and Host first ask which route to race. */
+  chooseRoute(mode: 'practice' | 'host'): void {
+    this.picking = mode;
+    this.routeOffset = 0;
+    this.emit();
+  }
+  /** Dragging on the lobby stage turns the player's monster. */
+  rotateLobby(dx: number): void {
+    this.view.rotateLobby(dx);
+  }
+  setLobbyTab(tab: UiState['lobbyTab']): void {
+    this.lobbyTab = tab;
+    this.emit();
+  }
+
+  /** Scrolls the route picker by one route (the picker shows three at a time). */
+  scrollRoutes(step: number): void {
+    this.routeOffset = Math.max(0, Math.min(ROUTES.length - 3, this.routeOffset + step));
+    this.emit();
+  }
+  cancelRoutePick(): void {
+    this.picking = null;
+    this.emit();
+  }
+  startOn(routeId: string): Promise<void> {
+    const mode = this.picking;
+    this.picking = null;
+    if (mode === 'host') return this.host(routeId);
+    return this.practice(routeId);
+  }
+  practice(map: string = ROUTES[0]!.id): Promise<void> {
+    return this.enter(() => startPractice(this.runner, map), [map]);
+  }
+  /** Public matchmaking: everyone is pooled on the route of the day. */
+  quick(): Promise<void> {
+    const map = featuredRoute().id;
+    return this.enter(() => quickMatch(this.runner, map), [map]);
+  }
+  host(map: string = ROUTES[0]!.id): Promise<void> {
+    return this.enter(async () => {
+      await hostRace(this.runner, map);
+    }, [map]);
   }
   join(code: string): Promise<void> {
     return this.enter(() => joinRace(this.runner, code.trim().toUpperCase()));
@@ -799,8 +966,7 @@ export class Game {
         this.emit();
         await new Promise((r) => setTimeout(r, REJOIN_DELAYS_MS[attempt]));
         try {
-          this.map = await ensureMap(DEFAULT_MAP);
-          this.view.setMap(this.map);
+          await Promise.all(ROUTES.map((r) => ensureMap(r.id)));
           await withTimeout(joinRace(this.runner, code), CONNECT_TIMEOUT_MS, () => this.runner.stop());
           this.bindNames();
           this.screen = 'play';

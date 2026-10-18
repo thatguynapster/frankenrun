@@ -115,7 +115,10 @@ export class TipCoach {
         if (me.build.head === HEAD_LANTERN) this.offer({ id: 'lantern', text: "Jack-o'-Lantern: follow the orange line on the road to the next checkpoint." });
       }
       // Reactive tips.
-      if (me.speed < 0.5 && raceTicks > 120) {
+      if (me.tipped) {
+        this.stuckSince = 0;
+        this.offer({ id: 'tipped', text: ctx.scheme === 'touch' ? 'Fell over! Tap Get up to stand back on your feet.' : 'Fell over! Press Space (or the Get up button) to stand back on your feet.' }, true);
+      } else if (me.speed < 0.5 && raceTicks > 120) {
         if (this.stuckSince === 0) this.stuckSince = nowMs;
         else if (nowMs - this.stuckSince > 2500) this.offer({ id: 'stuck', text: 'Stuck? Hold steer left or right to spin on the spot, then drive off. Hold Reset to return to the last checkpoint.' }, true);
       } else {

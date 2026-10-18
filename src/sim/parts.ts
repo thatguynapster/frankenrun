@@ -119,6 +119,13 @@ export const FINISH_WINDOW_TICKS = seconds(30);
 export const CHECKPOINT_RADIUS = 12;
 export const RESET_HOLD_TICKS = 30;
 export const RESET_FREEZE_TICKS = 60;
+// Tipping over: the monster counts as fallen once its up direction has been tilted past TIP_MIN_UP (cos 60 degrees)
+// for TIP_TICKS in a row; Get up rights it in place, with a short loss of control and a cooldown.
+export const TIP_MIN_UP = 0.5;
+export const TIP_TICKS = 15;
+export const GETUP_FREEZE_TICKS = 60;
+export const GETUP_COOLDOWN_TICKS = 45;
+export const GETUP_HOP = 0.12; // metres per tick, a small hop as it rights itself
 
 // Steering lock fades linearly with speed: full lock at rest, STEER_MIN_SCALE at/above STEER_FADE_SPEED (m/s).
 export const STEER_FADE_SPEED = 24;
