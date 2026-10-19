@@ -7,6 +7,7 @@ import { createDeterministicPhysicsWorld3D, stepDeterministicPhysicsWorld3D } fr
 import { dist, project, type Pt } from './lib/geo.ts';
 import type { BuildingData, MapData, RoadSeg, WallData } from '../src/sim/mapdata.ts';
 import { ROUTES } from './routes.ts';
+import { placeLamps } from './lamps.ts';
 
 const id = process.argv[2] ?? 'route1';
 const def = ROUTES[id];
@@ -276,9 +277,29 @@ function collidersFor(pts: Pt[], heightM: number): Pt[][] {
 }
 
 // ---- buildings ----
+/** Share of a footprint's area that lies on a road lane (within a road's half-width of its centre line), sampled on a 1.5 m grid. */
+const MAX_LANE_OVERLAP = 0.2;
+function laneOverlap(poly: Pt[]): number {
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  let inside = 0, onLane = 0;
+  for (let x = Math.min(...xs) + 0.75; x < Math.max(...xs); x += 1.5) {
+    for (let z = Math.min(...zs) + 0.75; z < Math.max(...zs); z += 1.5) {
+      const p = { x, z };
+      if (!pointInPoly(p, poly)) continue;
+      inside += 1;
+      const gx = Math.floor(x / GRID), gz = Math.floor(z / GRID);
+      let hit = false;
+      for (let dx = -1; dx <= 1 && !hit; dx += 1) for (let dz = -1; dz <= 1 && !hit; dz += 1) {
+        for (const [a, b, hw] of grid.get(`${gx + dx},${gz + dz}`) ?? []) if (segDist(p, a, b) <= hw) { hit = true; break; }
+      }
+      if (hit) onLane += 1;
+    }
+  }
+  return inside === 0 ? 0 : onLane / inside;
+}
 const bIn = load('buildings');
 const buildings: BuildingData[] = [];
-let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0;
+let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0, onRoad = 0;
 for (const el of bIn.elements) {
   if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) { dropped += 1; continue; }
   let pts = toPts(el.geometry);
@@ -287,6 +308,9 @@ for (const el of bIn.elements) {
   if (area(pts) < MIN_BUILDING_AREA_M2) { dropped += 1; continue; }
   pts = simplify(pts, SIMPLIFY_BUILDING_M);
   if (pts.length < 3) { dropped += 1; continue; }
+  // A footprint that sits on a road (a mapping slip, or a building the road was built through) would stand in the middle of
+  // the street: leave it out of the map entirely, for rendering and for collision.
+  if (laneOverlap(pts) >= MAX_LANE_OVERLAP) { onRoad += 1; continue; }
   const levels = Number(el.tags?.['building:levels']);
   const height = Number(el.tags?.['height']);
   const hM = Number.isFinite(height) && height > 0 ? height : Number.isFinite(levels) && levels > 0 ? levels * 3 : 6;
@@ -334,6 +358,30 @@ for (const j of junctions) {
   let taken = 0;
   for (const c of nearby) if (taken < 2 && spaced(c)) { anchors.push(c); taken += 1; }
 }
+
+// ---- street lamps: scenery along the roads; the ones beside the route are also solid tentacle anchors ----
+const LAMP_ANCHOR_REACH = 25; // metres from the route
+const LAMP_ANCHOR_CAP = 60;
+const lxs = corridor.polyline.map((p) => p.x), lzs = corridor.polyline.map((p) => p.z);
+const lampSpots = placeLamps({ bounds: { minX: dm(Math.min(...lxs) - 250), maxX: dm(Math.max(...lxs) + 250), minZ: dm(Math.min(...lzs) - 250), maxZ: dm(Math.max(...lzs) + 250) }, roads, buildings }, corridor.polyline);
+const routeLine = corridor.polyline;
+const nearRoute = (p: Pt): boolean => routeLine.some((q, i) => i + 1 < routeLine.length && segDist(p, q, routeLine[i + 1]!) <= LAMP_ANCHOR_REACH);
+/** True where the route runs fairly straight past this point: a post at a bend is where a monster cuts the corner and gets wedged. */
+const onStraight = (p: Pt): boolean => {
+  let best = 0, bestD = Infinity;
+  routeLine.forEach((q, i) => { const d = dist(p, q); if (d < bestD) { bestD = d; best = i; } });
+  const a = routeLine[Math.max(0, best - 4)]!, m = routeLine[best]!, b = routeLine[Math.min(routeLine.length - 1, best + 4)]!;
+  const h1 = Math.atan2(m.x - a.x, m.z - a.z), h2 = Math.atan2(b.x - m.x, b.z - m.z);
+  let turn = Math.abs(h2 - h1);
+  if (turn > Math.PI) turn = 2 * Math.PI - turn;
+  return turn < 0.35;
+};
+let lampAnchors = 0;
+for (const l of lampSpots) {
+  const p = { x: l.x, z: l.z };
+  if (lampAnchors < LAMP_ANCHOR_CAP && nearRoute(p) && onStraight(p) && spaced(p)) { anchors.push(p); lampAnchors += 1; }
+}
+console.log(`  lamps ${lampSpots.length}, of them tentacle anchors ${lampAnchors}`);
 
 // ---- checkpoints: every ~400 m, at each turn > 60 degrees, plus start and finish; cap 12 ----
 const poly = corridor.polyline;
@@ -414,6 +462,7 @@ const map: MapData = {
   anchors: anchors.map((a) => ({ x: dm(a.x), z: dm(a.z) })),
   lengthM: Math.round(corridor.length),
   route: routeFlat,
+  lamps: lampSpots.flatMap((l) => [dm(l.x), dm(l.z), Math.round(l.dx * 100), Math.round(l.dz * 100)]),
 };
 
 const json = Buffer.from(JSON.stringify(map), 'utf8');
@@ -423,7 +472,7 @@ mkdirSync('public/cdn-assets/accra', { recursive: true });
 writeFileSync(`bake/out/${id}.map.json`, json);
 writeFileSync(`public/cdn-assets/accra/${id}.map.json.gz`, gz);
 console.log(`${id}: ${(json.length / 1024).toFixed(0)} KB json, ${(gz.length / 1024).toFixed(0)} KB gzip`);
-console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, no valid collider ${rejected}), walls ${walls.length}, anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
+console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}), walls ${walls.length}, anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
 console.log(`  checkpoints ${checkpoints.length}, route ${Math.round(total)} m, OSM base ${bIn.osmDate}`);
 const BUDGET = 4 * 1024 * 1024;
 if (gz.length > BUDGET) { console.error(`BUDGET EXCEEDED: ${gz.length} > ${BUDGET}`); process.exit(1); }

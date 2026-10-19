@@ -27,6 +27,7 @@ import {
   COUNTDOWN_TICKS,
   FINISH_WINDOW_TICKS,
   GRAVITY_Y,
+  BLOB_GRAVITY,
   HEADS,
   CLAW_COOLDOWN_TICKS,
   CLAW_REAR_COS,
@@ -70,6 +71,8 @@ export interface GameInput {
   readonly steer: number; // -100..100, positive = right
   readonly arms: boolean;
   readonly head: boolean;
+  /** With `head`: throw the slime ahead of the monster instead of behind it. */
+  readonly slimeFwd: boolean;
   readonly legs: boolean;
   readonly reset: boolean;
   /** Right a monster that has fallen on its side (only does anything while it is tipped over). */
@@ -92,6 +95,7 @@ export const DEFAULT_INPUT: GameInput = {
   steer: 0,
   arms: false,
   head: false,
+  slimeFwd: false,
   legs: false,
   reset: false,
   getUp: false,
@@ -181,6 +185,19 @@ export interface Slick {
   readonly owner: number;
 }
 
+/** A glob of slime in the air: it rises out of a monster's head and falls, then becomes a slick on the road. */
+export interface Blob {
+  /** Metres. */
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  /** Metres per tick. */
+  readonly vx: number;
+  readonly vy: number;
+  readonly vz: number;
+  readonly owner: number;
+}
+
 export interface GameState {
   readonly frame: number;
   readonly phase: Phase;
@@ -188,6 +205,7 @@ export interface GameState {
   readonly physics: DeterministicPhysicsWorld3D;
   readonly players: readonly PlayerState[];
   readonly slicks: readonly Slick[];
+  readonly blobs: readonly Blob[];
   readonly pickups: readonly Pickup[];
   readonly nextPickupId: number;
   readonly seed: number;
@@ -257,6 +275,7 @@ export interface GameProjection {
   readonly hostSlot: number;
   readonly players: readonly PlayerView[];
   readonly slicks: readonly Slick[];
+  readonly blobs: readonly Blob[];
   readonly pickups: readonly Pickup[];
   readonly finishOrder: readonly number[];
   /** Collision cells whose colliders are currently loaded (for the collider debug view). */
@@ -415,6 +434,7 @@ export function createGameState(config: SessionConfig, prep: PreparedMap): GameS
     physics: createDeterministicPhysicsWorld3D(prep.staticBodies),
     players,
     slicks: [],
+    blobs: [],
     pickups: [],
     nextPickupId: 1,
     seed: config.seed,
@@ -438,9 +458,36 @@ function normaliseInput(input: GameInput | undefined): GameInput {
   };
 }
 
-function slickGripMul(slicks: readonly Slick[], x: number, z: number): number {
+const BLOB_G_TICK = BLOB_GRAVITY / (TICK_RATE * TICK_RATE);
+
+/** tan(60 degrees): spelled out so the throw never depends on a platform's trigonometry. */
+const TAN_60 = 1.7320508075688772;
+
+/**
+ * Spits a blob out of a monster's head at a 60 degree angle, straight back (or straight ahead). It carries the monster's
+ * own speed, and is thrown so it lands `blobBack` (or `blobAhead`) metres from the monster. Later this can take an
+ * aim direction from the reticle instead of "back or ahead".
+ */
+function launchBlob(body: DeterministicPhysicsBody3D, owner: number, ahead: boolean): Blob {
+  const o = body.orientation ?? { x: 0, y: 0, z: 0, w: 1 };
+  let fx = 2 * (o.x * o.z + o.w * o.y), fz = 1 - 2 * (o.x * o.x + o.y * o.y);
+  const len = Math.hypot(fx, fz) || 1;
+  const sign = ahead ? 1 : -1;
+  fx = (fx / len) * sign;
+  fz = (fz / len) * sign;
+  const range = ahead ? HEADS.slime.blobAhead : HEADS.slime.blobBack;
+  const y0 = body.y + 1.9; // out of the top of the head
+  // Relative to the monster the blob moves at 60 degrees: vertical speed = TAN_60 x horizontal speed. Landing after
+  // `flight` ticks at `range` metres away means y0 + range x TAN_60 = gravity x flight^2 / 2.
+  const flight = Math.sqrt((2 * (y0 + range * TAN_60)) / BLOB_G_TICK);
+  const horizontal = range / flight;
+  return { x: body.x, y: y0, z: body.z, vx: body.vx + fx * horizontal, vy: horizontal * TAN_60, vz: body.vz + fz * horizontal, owner };
+}
+
+function slickGripMul(slicks: readonly Slick[], x: number, z: number, slot: number): number {
   const radius = HEADS.slime.slickRadius;
   for (const s of slicks) {
+    if (s.owner === slot) continue; // a monster never skids on its own slime
     if (Math.hypot(x - s.x, z - s.z) <= radius) return HEADS.slime.slickGripMul;
   }
   return 1;
@@ -522,6 +569,7 @@ function restartState(state: GameState, frame: number, prep: PreparedMap): GameS
     // Everyone is back at the build screen; a player who had already readied up stays ready.
     players: state.players.map((p) => ({ ...newPlayer(p.slot), build: p.build, ready: p.ready, lastSeen: p.lastSeen })),
     slicks: [],
+    blobs: [],
     pickups: [],
     nextPickupId: 1,
     finishOrder: [],
@@ -602,6 +650,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   let world = state.physics;
   let players = basePlayers;
   let slicks = state.slicks;
+  let blobs = state.blobs;
   let phase = state.phase;
   let phaseStart = state.phaseStart;
   let finishOrder = state.finishOrder;
@@ -630,6 +679,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     const torques: { bodyId: string; torque: { x: number; y: number; z: number } }[] = [];
     const respawns: DeterministicPhysicsBody3D[] = [];
     const newSlicks: Slick[] = [];
+    const newBlobs: Blob[] = [];
 
     players = players.map((player, i) => {
       const input = inputs[i]!;
@@ -667,20 +717,11 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         }
 
         if (p.build.head === HEAD_SLIME && headEdge && headCooldown === 0 && trailLeft === 0) {
-          trailLeft = HEADS.slime.trailTicks;
+          trailLeft = HEADS.slime.spewTicks;
           headCooldown = HEADS.slime.cooldownTicks;
+          newBlobs.push(launchBlob(body, p.slot, input.slimeFwd));
         }
-        if (trailLeft > 0) {
-          if ((HEADS.slime.trailTicks - trailLeft) % HEADS.slime.dropEveryTicks === 0) {
-            newSlicks.push({
-              x: body.x,
-              z: body.z,
-              expires: frame + HEADS.slime.slickLifeTicks,
-              owner: p.slot,
-            });
-          }
-          trailLeft -= 1;
-        }
+        if (trailLeft > 0) trailLeft -= 1;
       }
 
       if (swing !== null) {
@@ -740,7 +781,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
 
       // --- vehicle controls ---
       const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
-      const gripMul = slickGripMul(state.slicks, body.x, body.z);
+      const gripMul = slickGripMul(state.slicks, body.x, body.z, p.slot);
       const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul));
       // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
       // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
@@ -785,6 +826,14 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     if (torques.length > 0) world = applyDeterministicForces3D(world, torques);
     if (respawns.length > 0) world = applyDeterministicWorldEdit3D(world, { replace: respawns });
     if (ropesToRemove.length > 0) world = applyDeterministicWorldEdit3D(world, { removeJointIds: ropesToRemove });
+    // Blobs in flight fall under their own gravity; one that reaches the road splats into a slick.
+    const flying: Blob[] = [];
+    for (const b of state.blobs) {
+      const moved = { ...b, x: b.x + b.vx, y: b.y + b.vy, z: b.z + b.vz, vy: b.vy - BLOB_G_TICK };
+      if (moved.y <= 0.1) newSlicks.push({ x: moved.x, z: moved.z, expires: frame + HEADS.slime.slickLifeTicks, owner: b.owner });
+      else flying.push(moved);
+    }
+    blobs = [...flying, ...newBlobs];
     slicks = [...state.slicks.filter((s) => s.expires > frame), ...newSlicks];
   }
 
@@ -976,7 +1025,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, pickups, nextPickupId, seed: state.seed, bots: state.bots, raceStart, finishOrder, activeCells };
+  return { frame, phase, phaseStart, physics: world, players, slicks, blobs, pickups, nextPickupId, seed: state.seed, bots: state.bots, raceStart, finishOrder, activeCells };
 }
 
 export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
@@ -1029,6 +1078,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
     hostSlot,
     players,
     slicks: state.slicks,
+    blobs: state.blobs,
     pickups: state.pickups,
     finishOrder: state.finishOrder,
     activeCells: state.activeCells,

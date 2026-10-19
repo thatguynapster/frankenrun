@@ -115,7 +115,7 @@ const BRUTE: BodyDef = {
       s.ico(0.5, 1, C.bruteLight, { p: [0, 0.44, 0.04], s: [1, 0.95, 0.85] }); // belly
       s.ico(0.62, 1, C.brute, { p: [0, 0.94, 0], s: [1.15, 0.85, 0.8] }); // chest
       s.ico(0.4, 0, C.brute, { p: [0, 1.15, -0.3], s: [1.15, 0.8, 0.7] }); // back hump
-      for (const sx of [-1, 1]) s.ico(0.3, 1, C.brute, { p: [sx * 0.68, 1.14, 0] }); // shoulders
+      for (const sx of [-1, 1]) s.ico(0.3, 0, C.brute, { p: [sx * 0.68, 1.14, 0] }); // shoulders
       s.cyl(0.17, 0.22, 0.26, 6, C.brute, { p: [0, 1.46, 0.03] }); // neck
       for (const sx of [-1, 1]) s.cyl(0.05, 0.05, 0.22, 6, C.steel, { p: [sx * 0.24, 1.42, 0.03], r: [0, 0, Math.PI / 2] }); // neck bolts
       // stitches: a seam across the belly and short diagonal threads across the chest
@@ -520,8 +520,8 @@ const LANTERN: HeadDef = {
     const pumpkin = cached('lantern-pumpkin', () => {
       const s = new Shape();
       s.ico(0.5, 1, C.pumpkin, { p: [0, 0.34, 0.05], s: [1.15, 0.95, 1.05] });
-      for (let i = 0; i < 8; i += 1) {
-        const a = (i / 8) * Math.PI * 2;
+      for (let i = 0; i < 6; i += 1) {
+        const a = (i / 6) * Math.PI * 2 + 0.3;
         s.ico(0.16, 0, C.pumpkinDark, { p: [Math.sin(a) * 0.5, 0.34, 0.05 + Math.cos(a) * 0.46], s: [0.5, 1.9, 0.5] }); // ribs
       }
       s.cyl(0.07, 0.1, 0.22, 5, C.stem, { p: [0, 0.78, 0.05], r: [0.2, 0, 0.15] });

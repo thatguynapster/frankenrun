@@ -859,7 +859,7 @@ body {
   gap: 8px;
 }
 
-.arrow {
+.carousel-arrow {
   flex: none;
   width: 44px;
   height: 64px;
@@ -871,11 +871,11 @@ body {
   border-radius: 4px;
 }
 
-.arrow:active {
+.carousel-arrow:active {
   transform: scale(0.92);
 }
 
-.arrow:disabled {
+.carousel-arrow:disabled {
   opacity: 0.35;
   filter: grayscale(0.5);
 }

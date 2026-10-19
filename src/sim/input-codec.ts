@@ -6,6 +6,7 @@ const codec = defineSyncplayInputCodec<GameInput>({
   steer: { kind: 'int', min: -100, max: 100 },
   arms: { kind: 'boolean' },
   head: { kind: 'boolean' },
+  slimeFwd: { kind: 'boolean' },
   legs: { kind: 'boolean' },
   reset: { kind: 'boolean' },
   getUp: { kind: 'boolean' },

@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { MonsterModel } from '../src/render/monsters/MonsterModel.js';
 import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS } from '../src/render/monsters/parts.js';
 
-const BUDGET = 2400;
+const BUDGET = 1600;
 let failures = 0;
 let worst = 0;
 const fail = (msg: string): void => {

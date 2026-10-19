@@ -48,13 +48,19 @@ export class Shape {
     return this;
   }
 
+  /** A box. One thinner than 6 cm (a stitch, a tooth, an eye) is drawn as a single flat plate facing +Z: 2 triangles instead of 12. */
   box(w: number, h: number, d: number, color: number, tf?: Tf): this {
+    if (d <= 0.06) {
+      const t = tf ?? {};
+      const [px, py, pz] = t.p ?? [0, 0, 0];
+      return this.add(new THREE.PlaneGeometry(w, h), color, { ...t, p: [px, py, pz + d / 2] });
+    }
     return this.add(new THREE.BoxGeometry(w, h, d), color, tf);
   }
 
   /** Cylinder along Y (top radius, bottom radius, height). */
-  cyl(top: number, bottom: number, h: number, segments: number, color: number, tf?: Tf): this {
-    return this.add(new THREE.CylinderGeometry(top, bottom, h, segments, 1), color, tf);
+  cyl(top: number, bottom: number, h: number, segments: number, color: number, tf?: Tf, open = false): this {
+    return this.add(new THREE.CylinderGeometry(top, bottom, h, segments, 1, open), color, tf);
   }
 
   /** Cone pointing +Y. */
@@ -70,10 +76,11 @@ export class Shape {
   /** Ring (torus) lying flat around the Y axis, for ribs and bands. */
   ring(radius: number, tube: number, color: number, tf?: Tf, arc = Math.PI * 2): this {
     const t = tf ?? {};
-    return this.add(new THREE.TorusGeometry(radius, tube, 4, 10, arc), color, { ...t, r: t.r ?? [Math.PI / 2, 0, 0] });
+    return this.add(new THREE.TorusGeometry(radius, tube, 3, 8, arc), color, { ...t, r: t.r ?? [Math.PI / 2, 0, 0] });
   }
 
   /** A tapered rod between two points (a limb segment, a claw, a horn). */
+  /** A tapered rod between two points. Its ends are left open (a joint, claw or hand always covers them): half the triangles. */
   limb(a: V3, b: V3, radiusA: number, radiusB: number, color: number, segments = 6): this {
     const from = new THREE.Vector3(...a);
     const to = new THREE.Vector3(...b);
@@ -83,7 +90,7 @@ export class Shape {
     const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.clone().normalize());
     const euler = new THREE.Euler().setFromQuaternion(quat);
     const mid = from.clone().add(to).multiplyScalar(0.5);
-    return this.cyl(radiusB, radiusA, length, segments, color, { p: [mid.x, mid.y, mid.z], r: [euler.x, euler.y, euler.z] });
+    return this.cyl(radiusB, radiusA, length, segments, color, { p: [mid.x, mid.y, mid.z], r: [euler.x, euler.y, euler.z] }, true);
   }
 
   /** Merges everything into one geometry. */

@@ -7,6 +7,8 @@ export class Controls {
   private touchBrake = false;
   private touchArms = false;
   private touchHead = false;
+  private touchSlimeFwd = false;
+  private slimeTimer = 0;
   private touchGetUp = false;
   private touchReset = false;
   // A phone or tablet (coarse primary pointer) drives automatically from the start; keyboards need W.
@@ -36,6 +38,17 @@ export class Controls {
   setTouchArms(on: boolean): void {
     this.touchActive = true;
     this.touchArms = on;
+  }
+  /** A swipe or tap on the slime button: one short press, thrown ahead or behind. */
+  pulseSlime(forward: boolean): void {
+    this.touchActive = true;
+    this.touchHead = true;
+    this.touchSlimeFwd = forward;
+    window.clearTimeout(this.slimeTimer);
+    this.slimeTimer = window.setTimeout(() => {
+      this.touchHead = false;
+      this.touchSlimeFwd = false;
+    }, 140); // long enough for the sim's 30 Hz tick to see the press
   }
   setTouchHead(on: boolean): void {
     this.touchActive = true;
@@ -77,7 +90,8 @@ export class Controls {
       // the other client's prediction forces a rollback, so this roughly halves the re-simulation work.
       steer: Math.round((-screenSteer * 100) / 10) * 10,
       arms: this.down('KeyJ') || this.touchArms,
-      head: this.down('KeyK') || this.touchHead,
+      head: this.down('KeyK', 'KeyI') || this.touchHead,
+      slimeFwd: this.down('KeyI') || this.touchSlimeFwd,
       getUp: this.down('Space') || this.touchGetUp,
       reset: this.down('KeyR') || this.touchReset,
     };

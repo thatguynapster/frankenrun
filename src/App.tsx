@@ -117,7 +117,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       <div className="panel center routes">
         <h1 className="title small">{ui.picking === 'host' ? 'Pick the route for your race' : 'Pick a route to practise'}</h1>
         <div className="route-carousel">
-          <button className="arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
+          <button className="carousel-arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
             ‹
           </button>
           <div className="route-list">
@@ -130,7 +130,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
               </button>
             ))}
           </div>
-          <button className="arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
+          <button className="carousel-arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
             ›
           </button>
         </div>
@@ -293,8 +293,8 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
 
 /** The control keys for the scheme in use. */
 function keysHelp(ui: UiState): string {
-  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities · hold Reset to return to the last checkpoint';
-  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime · hold R to reset · Space to get up if you fall over · Esc menu';
+  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities · swipe Slime up to throw it ahead, down to throw it behind · hold Reset to return to the last checkpoint';
+  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
 function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission'] }) {
@@ -573,14 +573,12 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             onUp={() => game.controls.setTouchArms(false)}
             secs={secs}
           />
-          <AbilityButton
-            label="Slime"
-            hint="K"
+          <SlimeButton
+            hint={ui.touch ? 'swipe' : 'K / I'}
             on={me.build.head === HEAD_SLIME}
             cd={me.headCooldown}
             active={me.trailing}
-            onDown={() => game.controls.setTouchHead(true)}
-            onUp={() => game.controls.setTouchHead(false)}
+            onThrow={(forward) => game.controls.pulseSlime(forward)}
             secs={secs}
           />
           <button
@@ -646,6 +644,45 @@ function AbilityButton(props: {
       onPointerLeave={onUp}
     >
       <b>{label}</b>
+      <small>{!on ? 'empty' : cd > 0 ? `${secs(cd)}s` : hint}</small>
+    </button>
+  );
+}
+
+/**
+ * The slime button. A tap throws the slime behind you; swiping the button up throws it ahead, swiping it down throws it
+ * behind. The throw happens when the swipe passes a short distance, or when the finger lifts after a tap.
+ */
+function SlimeButton(props: { hint: string; on: boolean; cd: number; active: boolean; onThrow: (forward: boolean) => void; secs: (t: number) => string }) {
+  const { hint, on, cd, active, onThrow, secs } = props;
+  const start = useRef<{ y: number; done: boolean } | null>(null);
+  return (
+    <button
+      className={`ability ${on ? '' : 'off'} ${active ? 'active' : ''} ${cd > 0 ? 'cooling' : ''}`}
+      disabled={!on}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start.current = { y: e.clientY, done: false };
+      }}
+      onPointerMove={(e) => {
+        const s = start.current;
+        if (s === null || s.done) return;
+        const dy = e.clientY - s.y;
+        if (Math.abs(dy) >= 24) {
+          s.done = true;
+          onThrow(dy < 0);
+        }
+      }}
+      onPointerUp={() => {
+        const s = start.current;
+        start.current = null;
+        if (s !== null && !s.done) onThrow(false);
+      }}
+      onPointerCancel={() => {
+        start.current = null;
+      }}
+    >
+      <b>Slime</b>
       <small>{!on ? 'empty' : cd > 0 ? `${secs(cd)}s` : hint}</small>
     </button>
   );

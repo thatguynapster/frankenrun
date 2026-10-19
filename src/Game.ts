@@ -760,7 +760,10 @@ export class Game {
     const scene: Scene = this.screen !== 'play' ? 'title' : frame !== undefined && (frame.phase === 'COUNTDOWN' || frame.phase === 'RACING') && me?.inRace === true ? 'race' : 'lobby';
     this.audio.setScene(scene);
     if (this.screen !== 'play' || frame === undefined || document.hidden) return;
-    for (const event of this.audioEvents.update(frame, slot, now)) this.audio.play(event, frame, slot);
+    for (const event of this.audioEvents.update(frame, slot, now)) {
+      this.audio.play(event, frame, slot);
+      this.view.effect(event.id, event.slot, event.gain ?? 1, frame, slot); // the same moments drive the squash, sparks and camera shake
+    }
   }
 
   /**

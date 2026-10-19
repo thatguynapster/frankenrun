@@ -7,34 +7,34 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "daeb722b1808f266dce07df9e4bd1b1ae363d324ef8f336059603fd8f001997d"
+  "engineIdentityHash": "5b1eb973d11c19dda7d9d0f8e3c4d6b62278192ae8e4a634ab8f8746e34d1b9b"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */
 export const mapAssets: readonly { name: string; digest: string; byteLength: number }[] = [
   {
     "name": "map-cantonments",
-    "digest": "a84aac78d4e949616ccee23fb9140eb0abf52f3da942a4856c1a78d1283d1526",
-    "byteLength": 345348
+    "digest": "ce5e27a0deaaea35bec5007b0da9345a3a799f14fe60e54ef32b8d0356eba9f7",
+    "byteLength": 357840
   },
   {
     "name": "map-jamestown",
-    "digest": "6b75a166916a2445b4cabfd60473e296c2a81a1d381cf13adae312acbc9585b4",
-    "byteLength": 756469
+    "digest": "0f2773c79717f23f6ef53406722cef612b76877768ed3f09d361401c7cef6be9",
+    "byteLength": 754523
   },
   {
     "name": "map-osu-backstreets",
-    "digest": "8d8bd72fa82562e0ffb2245ec7550d26a38b3953c7bd70dfbaef93456786e781",
-    "byteLength": 451833
+    "digest": "1a1b273a2ca0fcf89246a4c4969fdc1b6b7494700e7094ecd2d768c360b166d1",
+    "byteLength": 458615
   },
   {
     "name": "map-ring-sprint",
-    "digest": "d3b16c4d613c57fb7d909cdec6e571221b420765cdc2aa80326e198aa4a944f0",
-    "byteLength": 704737
+    "digest": "d711727e84fbbb754efca2db69e5d94126eb206f0dfcb698fe1608271e710606",
+    "byteLength": 716272
   },
   {
     "name": "map-route1",
-    "digest": "c1245cc35cb861b5b00ac16b227c0799b33d3f6a071e34960cf4162396c8f4f4",
-    "byteLength": 547278
+    "digest": "cbd27c1927c16de3e9547dd54869c233cf8d0ea0c49f6e99ec6e996571a20a31",
+    "byteLength": 556901
   }
 ];

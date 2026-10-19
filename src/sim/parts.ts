@@ -7,6 +7,8 @@ export const seconds = (s: number): number => Math.round(s * TICK_RATE);
 /** Physics mass of a body with spec mass 1.0. Forces below are scaled against it. */
 export const MASS_UNIT = 1200;
 /** Gravity in m/tick² (9.8 m/s² at 30 Hz). */
+/** Gravity for slime blobs, in metres per second squared (a bit stronger than the world's, so they snap down). */
+export const BLOB_GRAVITY = 18;
 export const GRAVITY_Y = -9.8 / (TICK_RATE * TICK_RATE);
 /** Base forward acceleration of a mass-1.0 body at full throttle, m/tick². */
 export const BASE_ACCEL = 0.01;
@@ -49,8 +51,14 @@ export interface HeadDef {
   readonly name: string;
   readonly blurb: string;
   readonly mass: number;
-  readonly trailTicks: number;
-  readonly dropEveryTicks: number;
+  /** How long the head keeps spewing after the button (drives the swell animation and the sound for rivals). */
+  readonly spewTicks: number;
+  /** The blob leaves the head at this angle above the ground (degrees). */
+  readonly blobAngleDeg: number;
+  /** Thrown backwards, it lands this far behind the monster, measured where the monster is when it lands (metres). */
+  readonly blobBack: number;
+  /** Thrown forwards, it lands this far ahead of the monster (metres). */
+  readonly blobAhead: number;
   readonly slickLifeTicks: number;
   readonly slickRadius: number;
   readonly slickGripMul: number;
@@ -94,17 +102,19 @@ export const ARMS: Readonly<Record<'none' | 'tentacles' | 'claws', ArmsDef>> = {
 };
 export const ARM_PARTS: readonly ArmsDef[] = [ARMS.none, ARMS.tentacles, ARMS.claws];
 
-const NO_HEAD: HeadDef = { name: 'No head part', blurb: 'Empty slot', mass: 0, trailTicks: 0, dropEveryTicks: 1, slickLifeTicks: 0, slickRadius: 0, slickGripMul: 1, cooldownTicks: 0 };
+const NO_HEAD: HeadDef = { name: 'No head part', blurb: 'Empty slot', mass: 0, spewTicks: 0, blobAngleDeg: 0, blobBack: 0, blobAhead: 0, slickLifeTicks: 0, slickRadius: 0, slickGripMul: 1, cooldownTicks: 0 };
 export const HEADS: Readonly<Record<'none' | 'slime' | 'lantern', HeadDef>> = {
   none: NO_HEAD,
   slime: {
     name: 'Slime Gland',
-    blurb: 'Drop a slick trail behind you',
+    blurb: 'Spit slime behind you (or ahead of you) so rivals skid on it',
     mass: 0,
-    trailTicks: seconds(4),
-    dropEveryTicks: 3,
-    slickLifeTicks: seconds(4),
-    slickRadius: 2.5,
+    spewTicks: seconds(0.5),
+    blobAngleDeg: 60,
+    blobBack: 4.5,
+    blobAhead: 14,
+    slickLifeTicks: seconds(7),
+    slickRadius: 3.4,
     slickGripMul: 0.2,
     cooldownTicks: seconds(8),
   },

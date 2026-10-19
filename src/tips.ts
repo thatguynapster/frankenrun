@@ -111,7 +111,7 @@ export class TipCoach {
       if (raceTicks >= 270) {
         if (me.build.arms === ARM_TENTACLES) this.offer({ id: 'tentacles', text: 'Tentacles: hold the button near a pole to swing round it.' });
         if (me.build.arms === ARM_CLAWS) this.offer({ id: 'claws', text: 'Crab Claws: ram a rival from behind to steal one of their parts.' });
-        if (me.build.head === HEAD_SLIME) this.offer({ id: 'slime', text: 'Slime Gland: tap the button to drop a slippery trail behind you.' });
+        if (me.build.head === HEAD_SLIME) this.offer({ id: 'slime', text: 'Slime Gland: tap the button to spit slime behind you and make rivals skid. Swipe the button up to throw it ahead.' });
         if (me.build.head === HEAD_LANTERN) this.offer({ id: 'lantern', text: "Jack-o'-Lantern: follow the orange line on the road to the next checkpoint." });
       }
       // Reactive tips.

@@ -42,4 +42,6 @@ export interface MapData {
   readonly lengthM: number;
   /** The route's centre line, flat [x, z, ...] decimetres, about one point per 3 m (for the Lantern's guide line). */
   readonly route?: readonly number[];
+  /** Street lamps (scenery, some of them also tentacle anchors), flat [x, z, dirX, dirZ, ...]: decimetres, then the direction toward the road in hundredths. */
+  readonly lamps?: readonly number[];
 }

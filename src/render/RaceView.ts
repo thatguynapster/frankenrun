@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GameProjection, PlayerView } from '../sim/game.js';
 import type { MapData } from '../sim/mapdata.js';
 import { getPreparedMap, type PreparedMap } from '../sim/world.js';
@@ -7,6 +6,9 @@ import { CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
 import { MonsterModel, createPartProp, type PartSlot } from './monsters/MonsterModel.js';
 import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
 import { makeIcons } from './partIcons.js';
+import { buildCity, cutaway } from './city.js';
+import { Particles } from './Particles.js';
+import type { SoundId } from '../audio/manifest.js';
 
 const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf, 0x5a6fbf, 0xbf5a5a]; // one per slot, up to 10
 const LEGS_COLOR = 0xff9a2e;
@@ -20,6 +22,8 @@ interface CarRig {
   lastLegs: number;
   lastArms: number;
   lastHead: number;
+  /** Whether the head was spewing last frame, to catch the moment a press starts. */
+  lastSpew: boolean;
 }
 
 /** A lost part tumbling away from its monster. */
@@ -41,6 +45,10 @@ export class RaceView {
   private readonly lobbyStage = new LobbyStage();
   private lobbyOn = false;
   private lobbyTime = 0;
+  private readonly particles = new Particles();
+  private shakeLeft = 0;
+  private shakeFor = 0.3;
+  private shakeAmp = 0;
   /** How far the player has turned their own monster on the stage (drag to rotate), and when they last touched it. */
   private lobbyYaw = 0;
   private lobbyTouchedAt = -10;
@@ -60,12 +68,18 @@ export class RaceView {
   private lanternSignature = '';
   private colliderLines: THREE.LineSegments | undefined;
   private colliderSignature = '';
-  private slickPool: THREE.Mesh[] = [];
+  private slickPool: THREE.Group[] = [];
+  private blobPool: THREE.Mesh[] = [];
+  private seenSlicks = new Set<string>();
   private pickupPool: { group: THREE.Group; gem: THREE.Mesh; beam: THREE.Mesh }[] = [];
   private pickupMats = [LEGS_COLOR, ARMS_COLOR, HEAD_COLOR].map((color) => new THREE.MeshBasicMaterial({ color }));
   private beamMats = [LEGS_COLOR, ARMS_COLOR, HEAD_COLOR].map((color) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false }));
-  private slickGeo = new THREE.CircleGeometry(HEADS.slime.slickRadius, 20);
-  private slickMat = new THREE.MeshBasicMaterial({ color: 0x4dff6a, transparent: true, opacity: 0.45 });
+  private slickGeo = RaceView.puddle(HEADS.slime.slickRadius, 1);
+  private slickCoreGeo = RaceView.puddle(HEADS.slime.slickRadius * 0.55, 2);
+  private slickMat = new THREE.MeshBasicMaterial({ color: 0x35d84a, transparent: true, opacity: 0.62, depthWrite: false });
+  private slickCoreMat = new THREE.MeshBasicMaterial({ color: 0xb6ff8a, transparent: true, opacity: 0.5, depthWrite: false });
+  private blobGeo = new THREE.IcosahedronGeometry(0.36, 1);
+  private blobMat = new THREE.MeshLambertMaterial({ color: 0x7dff3a, emissive: 0x2c8a10, flatShading: true });
   private resizeObserver: ResizeObserver;
   private camPos = new THREE.Vector3(0, 6, -10);
   private camLook = new THREE.Vector3(0, 1, 10);
@@ -94,6 +108,7 @@ export class RaceView {
     moon.position.set(-60, 120, -40);
     this.scene.add(moon);
     this.scene.add(this.lobbyStage.group);
+    this.scene.add(this.particles.points);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -147,63 +162,8 @@ export class RaceView {
       group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
     }
 
-    // Buildings: extruded footprints in a few muted night colours. They are merged per 100 m chunk, so the
-    // camera frustum can skip whole chunks instead of drawing the entire city every frame.
-    if (map.buildings.length > 0) {
-      const palette = [0x8a78c0, 0x6d86bd, 0x9a7ec4, 0x6fa3ad].map((c) => new THREE.Color(c));
-      const chunks = new Map<string, THREE.BufferGeometry[]>();
-      map.buildings.forEach((b, i) => {
-        const shape = new THREE.Shape();
-        let sx = 0, sz = 0;
-        for (let k = 0; k < b.pts.length; k += 2) {
-          const x = b.pts[k]! / 10, z = b.pts[k + 1]! / 10;
-          sx += x;
-          sz += z;
-          if (k === 0) shape.moveTo(x, -z);
-          else shape.lineTo(x, -z);
-        }
-        const n = b.pts.length / 2;
-        const extruded = new THREE.ExtrudeGeometry(shape, { depth: b.h / 10, bevelEnabled: false });
-        extruded.rotateX(-Math.PI / 2); // extrude along +Y; (x, -z) in shape space maps back to (x, z)
-        const g = extruded.index ? extruded.toNonIndexed() : extruded;
-        if (g !== extruded) extruded.dispose();
-        const c = palette[i % palette.length]!;
-        const count = g.getAttribute('position').count;
-        const colors = new Float32Array(count * 3);
-        for (let v = 0; v < count; v += 1) {
-          colors[v * 3] = c.r;
-          colors[v * 3 + 1] = c.g;
-          colors[v * 3 + 2] = c.b;
-        }
-        g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        g.deleteAttribute('uv');
-        const key = `${Math.floor(sx / n / 100)},${Math.floor(sz / n / 100)}`;
-        const list = chunks.get(key);
-        if (list) list.push(g);
-        else chunks.set(key, [g]);
-      });
-      // Lighting is baked into the vertex colours (a fixed moon direction plus ambient), so the city can be
-      // drawn with a trivial unlit shader. This keeps the flat-shaded look at a fraction of the GPU cost.
-      const material = new THREE.MeshBasicMaterial({ vertexColors: true });
-      const moon = new THREE.Vector3(-0.45, 0.8, -0.3).normalize();
-      for (const geos of chunks.values()) {
-        const merged = mergeGeometries(geos, false);
-        if (merged) {
-          merged.computeVertexNormals();
-          const normals = merged.getAttribute('normal');
-          const colors = merged.getAttribute('color');
-          for (let v = 0; v < normals.count; v += 1) {
-            const lit = Math.max(0, normals.getX(v) * moon.x + normals.getY(v) * moon.y + normals.getZ(v) * moon.z);
-            const shade = 0.5 + 0.62 * lit;
-            colors.setXYZ(v, Math.min(1, colors.getX(v) * shade), Math.min(1, colors.getY(v) * shade), Math.min(1, colors.getZ(v) * shade));
-          }
-          merged.deleteAttribute('normal');
-          merged.computeBoundingSphere();
-          group.add(new THREE.Mesh(merged, material));
-        }
-        geos.forEach((g) => g.dispose());
-      }
-    }
+    // Buildings with painted walls, lit windows and roofs, plus street lamps (see city.ts), merged per 100 m chunk.
+    for (const object of buildCity(map)) group.add(object);
 
     // Walls and the boundary.
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x6a5a86, flatShading: true });
@@ -231,9 +191,13 @@ export class RaceView {
 
     // Tentacle anchors.
     const poleMat = new THREE.MeshLambertMaterial({ color: ARMS_COLOR, emissive: 0x3a1566, flatShading: true });
-    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 8), poleMat, Math.max(1, this.anchors.length));
-    this.anchors.forEach((a, i) => poles.setMatrixAt(i, new THREE.Matrix4().makeTranslation(a.x, 1.5, a.z)));
-    poles.count = this.anchors.length;
+    // Anchors that are street lamps are drawn as lamps (see city.ts); the rest are purple poles.
+    const lampKeys = new Set<string>();
+    for (let k = 0; k + 3 < (map.lamps?.length ?? 0); k += 4) lampKeys.add(`${map.lamps![k]},${map.lamps![k + 1]}`);
+    const posts = map.anchors.filter((a) => !lampKeys.has(`${a.x},${a.z}`));
+    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 8), poleMat, Math.max(1, posts.length));
+    posts.forEach((a, i) => poles.setMatrixAt(i, new THREE.Matrix4().makeTranslation(a.x / 10, 1.5, a.z / 10)));
+    poles.count = posts.length;
     group.add(poles);
 
     // Checkpoints.
@@ -260,7 +224,7 @@ export class RaceView {
     rope.visible = false;
     this.scene.add(rope);
     this.scene.add(model.root);
-    return { model, rope, lastLegs: 0, lastArms: 0, lastHead: 0 };
+    return { model, rope, lastLegs: 0, lastArms: 0, lastHead: 0, lastSpew: false };
   }
 
   /** Throws a lost part off the monster: it tumbles, bounces once and shrinks away. */
@@ -323,19 +287,69 @@ export class RaceView {
     });
   }
 
-  private updateSlicks(frame: GameProjection): void {
-    while (this.slickPool.length < frame.slicks.length) {
-      const m = new THREE.Mesh(this.slickGeo, this.slickMat);
-      m.rotation.x = -Math.PI / 2;
-      m.position.y = 0.05;
-      this.scene.add(m);
-      this.slickPool.push(m);
+  /** An uneven, blobby disc lying on the road (a puddle, not a perfect circle). */
+  private static puddle(radius: number, seed: number): THREE.BufferGeometry {
+    const g = new THREE.CircleGeometry(radius, 16);
+    const pos = g.getAttribute('position');
+    for (let i = 1; i < pos.count; i += 1) {
+      const wobble = 0.82 + 0.3 * Math.abs(Math.sin(i * 12.9898 + seed * 78.233));
+      pos.setXY(i, pos.getX(i) * wobble, pos.getY(i) * wobble);
     }
-    this.slickPool.forEach((m, i) => {
-      const s = frame.slicks[i];
-      m.visible = s !== undefined;
-      if (s !== undefined) m.position.set(s.x, 0.05, s.z);
+    g.rotateX(-Math.PI / 2);
+    return g;
+  }
+
+  /** Slime in flight (a glob with a short drip trail) and the puddles it leaves behind. */
+  private updateSlicks(frame: GameProjection, dt: number, time: number): void {
+    // blobs in the air
+    while (this.blobPool.length < frame.blobs.length) {
+      const m = new THREE.Mesh(this.blobGeo, this.blobMat);
+      this.scene.add(m);
+      this.blobPool.push(m);
+    }
+    this.blobPool.forEach((m, i) => {
+      const b = frame.blobs[i];
+      m.visible = b !== undefined;
+      if (b === undefined) return;
+      m.position.set(b.x, b.y, b.z);
+      const stretch = 1 + Math.min(0.5, Math.abs(b.vy) * 3);
+      const wobble = 1 + Math.sin(time * 18 + i) * 0.08;
+      m.scale.set(wobble / Math.sqrt(stretch), stretch, wobble / Math.sqrt(stretch));
+      if (dt > 0) this.particles.burst(b.x, b.y, b.z, { count: 1, color: 0x7dff3a, speed: 0.6, up: 0, life: 0.35, gravity: 0.6 });
     });
+    // puddles on the road: they spread out when they land, and a splat bursts from each new one
+    while (this.slickPool.length < frame.slicks.length) {
+      const group = new THREE.Group();
+      const base = new THREE.Mesh(this.slickGeo, this.slickMat);
+      base.position.y = 0.06;
+      const core = new THREE.Mesh(this.slickCoreGeo, this.slickCoreMat);
+      core.position.set(0.3, 0.07, -0.2);
+      group.add(base, core);
+      this.scene.add(group);
+      this.slickPool.push(group);
+    }
+    const life = HEADS.slime.slickLifeTicks;
+    const live = new Set<string>();
+    this.slickPool.forEach((group, i) => {
+      const s = frame.slicks[i];
+      group.visible = s !== undefined;
+      if (s === undefined) return;
+      group.position.set(s.x, 0, s.z);
+      const age = frame.frame - (s.expires - life); // ticks since it landed
+      const grow = Math.min(1, 0.25 + age / 8);
+      const fade = Math.min(1, (s.expires - frame.frame) / 30); // melts away over the last second
+      group.scale.set(grow, 1, grow);
+      this.slickMat.opacity = 0.62;
+      group.rotation.y = i * 1.7;
+      void fade;
+      const key = `${s.x.toFixed(2)},${s.z.toFixed(2)},${s.expires}`;
+      live.add(key);
+      if (!this.seenSlicks.has(key)) {
+        this.seenSlicks.add(key);
+        if (age < 10) this.particles.burst(s.x, 0.3, s.z, { count: 20, color: 0x7dff3a, speed: 5, up: 4, life: 0.6 });
+      }
+    });
+    for (const key of this.seenSlicks) if (!live.has(key)) this.seenSlicks.delete(key);
   }
 
   private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase'], dt: number, time: number): void {
@@ -350,6 +364,9 @@ export class RaceView {
     rig.lastLegs = b.legs;
     rig.lastArms = b.arms;
     rig.lastHead = b.head;
+    // slime spews out of the head the moment the button is pressed
+    if (p.trailing && !rig.lastSpew && phase === 'RACING') this.particles.burst(p.x, p.y + 2.4, p.z, { count: 18, color: 0x7dff3a, speed: 3, up: 8, life: 0.7 });
+    rig.lastSpew = p.trailing;
     rig.model.setBuild(b);
     rig.model.update(p, dt, time);
     if (p.swingPole >= 0) {
@@ -445,6 +462,10 @@ export class RaceView {
     }
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
+    // Buildings between the camera and the monster dissolve instead of hiding it.
+    cutaway.from.copy(this.camPos);
+    cutaway.to.set(local.x, local.y + 0.9, local.z);
+    cutaway.on.value = 1;
   }
 
   /** Keeps the route's centre line, and which route point each checkpoint sits on, for the Lantern's guide line. */
@@ -570,18 +591,71 @@ export class RaceView {
     this.scene.add(this.colliderLines);
   }
 
+  /** Camera shake: a short, small jolt (intensity in metres, duration in seconds). A bigger jolt replaces a smaller one. */
+  shake(intensity: number, seconds = 0.3): void {
+    if (intensity * 1 < this.shakeAmp * (this.shakeLeft / this.shakeFor)) return;
+    this.shakeAmp = intensity;
+    this.shakeFor = seconds;
+    this.shakeLeft = seconds;
+  }
+
+  /**
+   * Visual feedback for something that just happened in the race (the same events that drive the sounds): a squash,
+   * a burst of sparks, a claw snap, a camera shake for the local player. Presentation only.
+   */
+  effect(id: SoundId, slot: number, strength: number, frame: GameProjection, localSlot: number): void {
+    const p = frame.players[slot];
+    const rig = this.cars[slot];
+    if (p === undefined || rig === undefined || this.lobbyOn) return;
+    const mine = slot === localSlot;
+    switch (id) {
+      case 'impact':
+        rig.model.hit(strength);
+        this.particles.burst(p.x, p.y - 0.4, p.z, { count: Math.round(8 + strength * 14), color: 0xffd27a, speed: 6, up: 3, life: 0.45 });
+        if (mine) this.shake(0.12 + strength * 0.32, 0.3);
+        break;
+      case 'partLoss':
+        rig.model.hit(1);
+        this.particles.burst(p.x, p.y + 0.4, p.z, { count: 22, color: 0xe9e1c9, speed: 7, up: 5, life: 0.8 });
+        this.particles.burst(p.x, p.y + 0.4, p.z, { count: 14, color: 0xff7a2e, speed: 5, up: 4, life: 0.6 });
+        if (mine) this.shake(0.5, 0.4);
+        break;
+      case 'steal':
+        rig.model.snapClaws();
+        this.particles.burst(p.x, p.y + 0.5, p.z, { count: 20, color: 0xff5a3a, speed: 6, up: 4, life: 0.6 });
+        if (mine) this.shake(0.35, 0.3);
+        break;
+      case 'pickup':
+        this.particles.burst(p.x, p.y + 0.6, p.z, { count: 18, color: 0xffe84a, speed: 3.5, up: 5, life: 0.9, gravity: 0.3 });
+        break;
+      case 'respawn':
+        this.particles.burst(p.x, p.y, p.z, { count: 26, color: 0x7fe8ff, speed: 4, up: 6, life: 0.9, gravity: 0.25 });
+        break;
+      case 'finish':
+        this.particles.burst(p.x, p.y + 1, p.z, { count: 20, color: 0xffd23b, speed: 6, up: 8, life: 1.2, gravity: 0.5 });
+        this.particles.burst(p.x, p.y + 1, p.z, { count: 20, color: 0x6fe07a, speed: 6, up: 8, life: 1.2, gravity: 0.5 });
+        break;
+      default:
+        break;
+    }
+  }
+
   /** Switches the scene between the race world and the lobby stage. */
   private setLobbyMode(on: boolean): void {
     if (on === this.lobbyOn) return;
     this.lobbyOn = on;
     if (on && this.iconCache === undefined) this.iconCache = makeIcons(this.renderer);
+    cutaway.on.value = 0;
     this.lobbyStage.group.visible = on;
+    this.particles.clear();
+    this.shakeLeft = 0;
     if (this.worldGroup) this.worldGroup.visible = !on;
     this.scene.background = on ? this.lobbyBackground : this.worldBackground;
     this.scene.fog = on ? null : new THREE.Fog(0x232b52, 50, 230);
     for (const r of this.rings) r.visible = !on;
     for (const p of this.pickupPool) p.group.visible = false;
     for (const s of this.slickPool) s.visible = false;
+    for (const b of this.blobPool) b.visible = false;
     if (on && this.lanternMesh) this.lanternMesh.visible = false;
     if (on) this.camera.clearViewOffset();
     else {
@@ -662,7 +736,8 @@ export class RaceView {
         if (rig !== undefined) this.updateCar(rig, p, frame.phase, dtSeconds, frame.frame / 30);
       });
       this.updateDebris(dtSeconds);
-      this.updateSlicks(frame);
+      this.particles.update(dtSeconds);
+      this.updateSlicks(frame, dtSeconds, frame.frame / 30);
       this.updatePickups(frame, frame.frame / 30);
       // A player with no monster in this race (late joiner, or left out of it) watches the race leader.
       const own = frame.players[localSlot] ?? frame.players[0];
@@ -670,6 +745,12 @@ export class RaceView {
       this.updateLantern(frame, own !== undefined && own.present ? own : undefined, frame.frame / 30);
       this.updateReticle(own !== undefined && own.present ? own : undefined, frame.phase === 'COUNTDOWN' || frame.phase === 'RACING');
       this.updateCamera(local, dtSeconds);
+      if (this.shakeLeft > 0) {
+        const k = (this.shakeLeft / this.shakeFor) * this.shakeAmp;
+        this.camera.position.x += (Math.random() - 0.5) * 2 * k;
+        this.camera.position.y += (Math.random() - 0.5) * 2 * k;
+        this.shakeLeft = Math.max(0, this.shakeLeft - dtSeconds);
+      }
       const next = local === undefined ? 0 : local.nextCheckpoint;
       this.rings.forEach((ring, i) => {
         const mat = ring.material as THREE.MeshBasicMaterial;
