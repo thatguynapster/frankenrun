@@ -259,40 +259,80 @@ const WEREWOLF_LEGS: LegDef = {
   },
 };
 
-/** Six jointed legs splayed to the sides, walking in two alternating triples. */
+/**
+ * Six jointed legs, walking in two alternating triples. Each leg is two segments solved with two-bone IK, so the foot
+ * follows a real step path: it lifts and swings forward, then plants and slides back as the body passes over it, and
+ * the knee bends to suit. At rest the legs stand splayed (the front ones reach forward, the rear ones back).
+ */
 const SPIDER_LEGS: LegDef = {
   id: 2,
   name: 'Spider Legs',
   hipHeight: 0.72,
   stride: 1.1,
   create(body) {
-    const legPieces = (side: number): Piece[] =>
-      cached(`spider-leg-${side}`, () => {
-        const s = new Shape();
-        s.limb([0, 0, 0], [side * 0.55, 0.3, 0], 0.1, 0.075, C.spider);
-        s.ico(0.1, 0, C.spiderGlow, { p: [side * 0.55, 0.3, 0] }); // knee
-        s.limb([side * 0.55, 0.3, 0], [side * 1.0, -0.72, 0.08], 0.075, 0.03, C.spider);
-        s.cone(0.03, 0.12, 4, C.ivory, { p: [side * 1.0, -0.7, 0.1], r: [Math.PI, 0, 0] });
-        return [{ geometry: s.build(), material: 'lit' as MatKind }];
-      });
+    const UPPER = 0.7, LOWER = 1.15;
+    const upperPieces = cached('spider-upper', () => {
+      const s = new Shape();
+      s.limb([0, 0, 0], [UPPER, 0, 0], 0.1, 0.075, C.spider);
+      s.ico(0.1, 0, C.spiderGlow, { p: [UPPER, 0, 0] }); // knee
+      return [{ geometry: s.build(), material: 'lit' as MatKind }];
+    });
+    const lowerPieces = cached('spider-lower', () => {
+      const s = new Shape();
+      s.limb([0, 0, 0], [LOWER, 0, 0], 0.075, 0.03, C.spider);
+      s.cone(0.03, 0.14, 4, C.ivory, { p: [LOWER + 0.05, 0, 0], r: [0, 0, -Math.PI / 2] });
+      return [{ geometry: s.build(), material: 'lit' as MatKind }];
+    });
     const root = new THREE.Group();
-    const legs: { leg: THREE.Group; group: number }[] = [];
-    const zs = [0.32, 0, -0.32];
+    const rowZ = [0.34, 0, -0.34];
+    const rowReach = [0.34, 0, -0.34]; // how far forward or back each row's foot rests from its hip
+    const legs: { hip: THREE.Group; upper: THREE.Group; lower: THREE.Group; side: number; row: number; group: number }[] = [];
     for (const side of [1, -1]) {
-      zs.forEach((z, row) => {
-        const leg = meshGroup(legPieces(side));
-        leg.position.set(side * body.hipX * 0.5, 0, z);
-        root.add(leg);
-        legs.push({ leg, group: (row + (side === 1 ? 0 : 1)) % 2 }); // alternating tripod
+      rowZ.forEach((z, row) => {
+        const hip = new THREE.Group();
+        hip.position.set(side * body.hipX * 0.5, 0, z);
+        const upper = meshGroup(upperPieces);
+        const lower = meshGroup(lowerPieces);
+        lower.position.set(UPPER, 0, 0);
+        upper.add(lower);
+        hip.add(upper);
+        root.add(hip);
+        legs.push({ hip, upper, lower, side, row, group: (row + (side === 1 ? 0 : 1)) % 2 }); // alternating tripod
       });
     }
+    const REST_OUT = 1.0; // sideways distance from the body to the planted foot
+    const REST_Y = -0.72; // the foot rests on the ground, below the hip
+    const STEP = 0.3; // half the stride, in leg units
+    const LIFT = 0.34;
+    const ease = (t: number): number => t * t * (3 - 2 * t);
     return {
       root,
       animate: (m) => {
-        for (const { leg, group: g } of legs) {
-          const ph = m.phase + g * Math.PI;
-          leg.rotation.y = Math.sin(ph) * 0.4 * m.amp;
-          leg.position.y = Math.max(0, Math.cos(ph)) * 0.12 * m.amp;
+        for (const leg of legs) {
+          const u = (((m.phase / (Math.PI * 2) + leg.group * 0.5) % 1) + 1) % 1; // 0..1 through the step cycle
+          let along = 0, lift = 0;
+          if (u < 0.45) {
+            const t = u / 0.45; // swing: lift the foot and put it down ahead
+            along = -STEP + 2 * STEP * ease(t);
+            lift = Math.sin(Math.PI * t) * LIFT;
+          } else {
+            along = STEP - 2 * STEP * ((u - 0.45) / 0.55); // stance: the foot stays put while the body moves over it
+          }
+          along *= m.amp;
+          lift *= m.amp;
+          // an idle shuffle so a standing monster is never frozen
+          const idle = (1 - m.amp) * Math.sin(m.time * 1.6 + leg.row * 1.3 + leg.side) * 0.03;
+          const dx = leg.side * REST_OUT - leg.side * body.hipX * 0.5;
+          const dz = rowReach[leg.row]! + along + idle;
+          const reach = Math.hypot(dx, dz);
+          const y = REST_Y + lift;
+          // two-bone IK in the vertical plane through the hip and the foot, knee up
+          const d = Math.max(Math.abs(UPPER - LOWER) + 0.05, Math.min(UPPER + LOWER - 0.02, Math.hypot(reach, y)));
+          const hipAngle = Math.atan2(y, reach) + Math.acos(Math.max(-1, Math.min(1, (UPPER * UPPER + d * d - LOWER * LOWER) / (2 * UPPER * d))));
+          const kneeInterior = Math.acos(Math.max(-1, Math.min(1, (UPPER * UPPER + LOWER * LOWER - d * d) / (2 * UPPER * LOWER))));
+          leg.hip.rotation.y = Math.atan2(-dz, dx); // turn the leg's plane toward the foot
+          leg.upper.rotation.z = hipAngle;
+          leg.lower.rotation.z = -(Math.PI - kneeInterior);
         }
       },
     };

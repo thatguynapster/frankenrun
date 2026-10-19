@@ -155,8 +155,10 @@ export const PIVOT_TORQUE = 0.05;
 export const PIVOT_MIN_STEER = 60;
 
 // Part loss and pickups
-/** A monster-to-monster contact counts as a hit when the bodies close at least this fast (m/s). */
-export const HIT_MIN_CLOSING_MS = 3;
+/** A monster-to-monster contact is a crash only when the bodies close at least this fast (m/s, about 29 km/h); a gentler bump does not count. */
+export const HIT_MIN_CLOSING_MS = 8;
+/** A monster-to-monster impact this hard (m/s, about 58 km/h closing) counts as two hits: a serious crash. */
+export const HIT_HEAVY_CLOSING_MS = 16;
 /** A wall or pole counts only when the monster was already doing at least this (m/s, = 60 km/h) and hits it solidly. */
 export const WALL_HIT_MIN_SPEED_MS = 60 / 3.6;
 export const WALL_HIT_MIN_CLOSING_MS = 4;
@@ -175,6 +177,26 @@ export const MISSING_SLOT_SPEED = 0.05;
 // and facing it, and can steal again only after the cooldown.
 export const CLAW_REAR_COS = 0.5;
 export const CLAW_COOLDOWN_TICKS = seconds(2);
+
+// Crab Claws grab (the arms button): clamp onto a rival ahead and hold on; if the rival does not break free in time the
+// grabber steals a part from them. With no rival in reach it reaches for a loose part instead.
+/** A rival must be within this many metres, and within CLAW_GRAB_CONE_COS of the nose, to be grabbed. */
+export const CLAW_GRAB_RANGE = 6.5;
+export const CLAW_GRAB_CONE_COS = 0.64;
+/** Loose parts can be reached from farther away, in a wider cone. */
+export const CLAW_PICKUP_RANGE = 9;
+export const CLAW_PICKUP_CONE_COS = 0.5;
+export const CLAW_GRAB_TICKS = seconds(1.6);
+export const CLAW_GRAB_COOLDOWN = seconds(6);
+export const CLAW_MISS_COOLDOWN = seconds(1.2);
+export const CLAW_FREED_COOLDOWN = seconds(3);
+export const CLAW_PICKUP_COOLDOWN = seconds(3);
+/** A grabbed monster frees itself by swinging the steering hard from one side to the other this many times. */
+export const STRUGGLE_FLIPS = 3;
+/** A grabber and the monster it grabs cannot hurt each other (or steal from each other by ramming) while the grab lasts and for this long after. */
+export const GRAB_SHIELD_TICKS = seconds(1);
+/** After breaking free (or being let go) a monster cannot be grabbed again for this long. */
+export const GRAB_IMMUNE_TICKS = seconds(2.5);
 
 // Lobby: a player counts as being in the room while their client keeps announcing itself; after this long without
 // hearing from them they are treated as gone (so a ghost can never block the host from starting).

@@ -110,12 +110,15 @@ export class TipCoach {
       if (raceTicks >= 75) this.offer({ id: 'goal', text: `Follow the arrow to the next checkpoint. Clear all ${ctx.checkpointTotal} to win, and watch out for rivals.` });
       if (raceTicks >= 270) {
         if (me.build.arms === ARM_TENTACLES) this.offer({ id: 'tentacles', text: 'Tentacles: hold the button near a pole to swing round it.' });
-        if (me.build.arms === ARM_CLAWS) this.offer({ id: 'claws', text: 'Crab Claws: ram a rival from behind to steal one of their parts.' });
+        if (me.build.arms === ARM_CLAWS) this.offer({ id: 'claws', text: 'Crab Claws: ram a rival from behind to steal a part, or press the button with a rival close ahead to grab and hold them. Hold on and you steal a part. The button also reaches for a loose part.' });
         if (me.build.head === HEAD_SLIME) this.offer({ id: 'slime', text: 'Slime Gland: tap the button to spit slime behind you and make rivals skid. Swipe the button up to throw it ahead.' });
         if (me.build.head === HEAD_LANTERN) this.offer({ id: 'lantern', text: "Jack-o'-Lantern: follow the orange line on the road to the next checkpoint." });
       }
       // Reactive tips.
-      if (me.tipped) {
+      if (me.grabbedBy >= 0) {
+        this.stuckSince = 0;
+        this.offer({ id: 'grabbed', text: 'You are grabbed! Swing the steering from side to side to break free before they steal a part.' }, true);
+      } else if (me.tipped) {
         this.stuckSince = 0;
         this.offer({ id: 'tipped', text: ctx.scheme === 'touch' ? 'Fell over! Tap Get up to stand back on your feet.' : 'Fell over! Press Space (or the Get up button) to stand back on your feet.' }, true);
       } else if (me.speed < 0.5 && raceTicks > 120) {

@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type Graphics, type UiState } from './Game';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts';
-import { ARM_TENTACLES, HEAD_SLIME, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
+import { ARM_CLAWS, ARM_TENTACLES, HEAD_SLIME, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
 import './style.css';
 
 const TICK = 30;
@@ -564,11 +564,11 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         )}
         <div className="abilities">
           <AbilityButton
-            label="Tentacles"
+            label={me.build.arms === ARM_CLAWS ? 'Claws' : 'Tentacles'}
             hint="J"
-            on={me.build.arms === ARM_TENTACLES}
+            on={me.build.arms === ARM_TENTACLES || me.build.arms === ARM_CLAWS}
             cd={me.armsCooldown}
-            active={me.swingPole >= 0}
+            active={me.swingPole >= 0 || me.grabbing >= 0}
             onDown={() => game.controls.setTouchArms(true)}
             onUp={() => game.controls.setTouchArms(false)}
             secs={secs}

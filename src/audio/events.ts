@@ -20,6 +20,7 @@ interface SlotMemory {
   partsGained: number;
   partsStolen: number;
   swinging: boolean;
+  grabbing: boolean;
   trailing: boolean;
   finished: boolean;
   steppedDistance: number;
@@ -67,6 +68,7 @@ export class AudioEvents {
         partsGained: p.partsGained,
         partsStolen: p.partsStolen,
         swinging: p.swingPole >= 0,
+        grabbing: p.grabbing >= 0,
         trailing: p.trailing,
         finished: p.finishTick >= 0,
         steppedDistance: 0,
@@ -115,6 +117,7 @@ export class AudioEvents {
       if (p.partsStolen > m.partsStolen) events.push({ id: 'steal', slot: p.slot });
       else if (p.partsGained > m.partsGained) events.push({ id: 'pickup', slot: p.slot });
       // Your own tentacle and slime sounds play the moment you press the button (see Game); others' follow the state.
+      if (p.slot !== localSlot && p.grabbing >= 0 && !m.grabbing) events.push({ id: 'steal', slot: p.slot, gain: 0.7 }); // a claw snaps shut
       if (p.slot !== localSlot && p.swingPole >= 0 && !m.swinging) events.push({ id: 'tentacle', slot: p.slot });
       if (p.slot !== localSlot && p.trailing && !m.trailing) events.push({ id: 'slime', slot: p.slot });
       // A reset puts the monster back at its last checkpoint: a jump no speed could cover.
@@ -151,6 +154,7 @@ export class AudioEvents {
       m.partsGained = p.partsGained;
       m.partsStolen = p.partsStolen;
       m.swinging = p.swingPole >= 0;
+      m.grabbing = p.grabbing >= 0;
       m.trailing = p.trailing;
       m.finished = p.finishTick >= 0;
       m.x = p.x;

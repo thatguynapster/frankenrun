@@ -352,7 +352,7 @@ export class RaceView {
     for (const key of this.seenSlicks) if (!live.has(key)) this.seenSlicks.delete(key);
   }
 
-  private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase'], dt: number, time: number): void {
+  private updateCar(rig: CarRig, p: PlayerView, phase: GameProjection['phase'], dt: number, time: number, frame: GameProjection): void {
     // A monster is drawn while it has a body in the world, and as a build preview on the start grid while in the lobby.
     rig.model.root.visible = p.present || (phase === 'BUILD' && p.joined);
     const b = p.build;
@@ -372,12 +372,22 @@ export class RaceView {
     if (p.swingPole >= 0) {
       const pole = this.anchors[p.swingPole];
       if (pole !== undefined) {
+        (rig.rope.material as THREE.LineBasicMaterial).color.set(ARMS_COLOR);
         const pos = rig.rope.geometry.attributes['position'] as THREE.BufferAttribute;
         pos.setXYZ(0, p.x, p.y + 0.4, p.z);
         pos.setXYZ(1, pole.x, 2.6, pole.z);
         pos.needsUpdate = true;
         rig.rope.visible = true;
       }
+    } else if (p.grabbing >= 0 && frame.players[p.grabbing] !== undefined) {
+      // a claw arm stretched from the grabber to the monster it holds
+      const target = frame.players[p.grabbing]!;
+      const pos = rig.rope.geometry.attributes['position'] as THREE.BufferAttribute;
+      pos.setXYZ(0, p.x, p.y + 0.6, p.z);
+      pos.setXYZ(1, target.x, target.y + 0.6, target.z);
+      pos.needsUpdate = true;
+      (rig.rope.material as THREE.LineBasicMaterial).color.set(0xff5a3a);
+      rig.rope.visible = true;
     } else {
       rig.rope.visible = false;
     }
@@ -733,7 +743,7 @@ export class RaceView {
       while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
       frame.players.forEach((p, i) => {
         const rig = this.cars[i];
-        if (rig !== undefined) this.updateCar(rig, p, frame.phase, dtSeconds, frame.frame / 30);
+        if (rig !== undefined) this.updateCar(rig, p, frame.phase, dtSeconds, frame.frame / 30, frame);
       });
       this.updateDebris(dtSeconds);
       this.particles.update(dtSeconds);

@@ -6,7 +6,7 @@ import { SHOW_LEADERBOARD, loadBoard, submitTime, type Board, type BoardPeriod, 
 import { readInvite, shareResult, shareRoom, type Invite } from './share.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
-import { ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
+import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS, TICK_RATE } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
 import { ROUTES, featuredRoute } from './routes.js';
@@ -779,6 +779,7 @@ export class Game {
       const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
       if (input.arms && !prev.arms) {
         if (me.build.arms === ARM_TENTACLES && me.armsCooldown === 0 && me.swingPole < 0 && frame) this.audio.play({ id: 'tentacle', slot }, frame, slot);
+        else if (me.build.arms === ARM_CLAWS && me.armsCooldown === 0 && me.grabbing < 0 && frame) this.audio.play({ id: 'steal', slot, gain: 0.7 }, frame, slot);
         else this.audio.playUi('denied');
       }
       if (input.head && !prev.head) {

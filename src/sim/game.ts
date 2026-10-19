@@ -30,10 +30,23 @@ import {
   BLOB_GRAVITY,
   HEADS,
   CLAW_COOLDOWN_TICKS,
+  CLAW_GRAB_RANGE,
+  CLAW_GRAB_CONE_COS,
+  CLAW_PICKUP_RANGE,
+  CLAW_PICKUP_CONE_COS,
+  CLAW_GRAB_TICKS,
+  CLAW_GRAB_COOLDOWN,
+  CLAW_MISS_COOLDOWN,
+  CLAW_FREED_COOLDOWN,
+  CLAW_PICKUP_COOLDOWN,
+  STRUGGLE_FLIPS,
+  GRAB_IMMUNE_TICKS,
   CLAW_REAR_COS,
   HEAD_PARTS,
   HIT_COOLDOWN_TICKS,
   HIT_MIN_CLOSING_MS,
+  HIT_HEAVY_CLOSING_MS,
+  GRAB_SHIELD_TICKS,
   LEG_PARTS,
   PRESENCE_TIMEOUT_TICKS,
   MISSING_SLOT_MASS,
@@ -125,6 +138,14 @@ export interface Swing {
   readonly ticksLeft: number;
 }
 
+/** A Crab Claws grab in progress, on the grabber's side. */
+export interface Grab {
+  readonly target: number;
+  readonly ticksLeft: number;
+  /** The tether between the two monsters, in metres. */
+  readonly maxLength: number;
+}
+
 export interface PlayerState {
   readonly slot: number;
   readonly build: Build;
@@ -139,6 +160,16 @@ export interface PlayerState {
   readonly trailLeft: number;
   readonly spinLeft: number;
   readonly swing: Swing | null;
+  /** Crab Claws: the rival this monster is holding. */
+  readonly grab: Grab | null;
+  /** Slot of the monster holding this one, or -1. */
+  readonly grabbedBy: number;
+  /** The monster this one last held, and until when the two are shielded from hurting each other. */
+  readonly lastGrab: { readonly partner: number; readonly until: number } | null;
+  /** Hard steering swings made while held; enough of them break free. */
+  readonly struggle: number;
+  readonly steerSign: number;
+  readonly grabImmuneUntil: number;
   readonly resetHold: number;
   /** Consecutive ticks the monster has been tilted past upright. */
   readonly tippedTicks: number;
@@ -253,6 +284,10 @@ export interface PlayerView {
   readonly armsCooldown: number;
   readonly headCooldown: number;
   readonly swingPole: number; // -1 when not swinging
+  /** Slot of the rival held in this monster's claws, or -1. */
+  readonly grabbing: number;
+  /** Slot of the monster holding this one, or -1. */
+  readonly grabbedBy: number;
   readonly trailing: boolean;
   /** Fallen on its side and waiting for the Get up button. */
   readonly tipped: boolean;
@@ -407,6 +442,12 @@ function newPlayer(slot: number): PlayerState {
     trailLeft: 0,
     spinLeft: 0,
     swing: null,
+    grab: null,
+    grabbedBy: -1,
+    lastGrab: null,
+    struggle: 0,
+    steerSign: 0,
+    grabImmuneUntil: 0,
     resetHold: 0,
     tippedTicks: 0,
     getUpReadyAt: 0,
@@ -482,6 +523,44 @@ function launchBlob(body: DeterministicPhysicsBody3D, owner: number, ahead: bool
   const flight = Math.sqrt((2 * (y0 + range * TAN_60)) / BLOB_G_TICK);
   const horizontal = range / flight;
   return { x: body.x, y: y0, z: body.z, vx: body.vx + fx * horizontal, vy: horizontal * TAN_60, vz: body.vz + fz * horizontal, owner };
+}
+
+const grabId = (slot: number): string => `grab-${slot}`;
+
+/**
+ * What a claw can reach from where a monster stands: the nearest rival ahead (within range and a forward cone), else the
+ * nearest loose part it has room for, else nothing. Later an aim direction from the reticle can replace "the nose".
+ */
+function findGrabTarget(
+  world: DeterministicPhysicsWorld3D,
+  state: GameState,
+  frame: number,
+  me: PlayerState,
+  body: DeterministicPhysicsBody3D,
+): { kind: 'rival'; slot: number; distance: number } | { kind: 'part'; id: number } | { kind: 'none' } {
+  const o = body.orientation ?? { x: 0, y: 0, z: 0, w: 1 };
+  let fx = 2 * (o.x * o.z + o.w * o.y), fz = 1 - 2 * (o.x * o.x + o.y * o.y);
+  const len = Math.hypot(fx, fz) || 1;
+  fx /= len;
+  fz /= len;
+  let best: { slot: number; distance: number } | null = null;
+  for (const other of state.players) {
+    if (other.slot === me.slot || !other.inRace || other.finishTick >= 0 || other.grabbedBy >= 0 || frame < other.grabImmuneUntil) continue;
+    const ob = deterministicPhysicsBodyById3D(world, carId(other.slot));
+    if (ob === undefined) continue;
+    const dx = ob.x - body.x, dz = ob.z - body.z, d = Math.hypot(dx, dz);
+    if (d < 0.01 || d > CLAW_GRAB_RANGE || (fx * dx + fz * dz) / d < CLAW_GRAB_CONE_COS) continue;
+    if (best === null || d < best.distance) best = { slot: other.slot, distance: d };
+  }
+  if (best !== null) return { kind: 'rival', slot: best.slot, distance: best.distance };
+  let part: { id: number; distance: number } | null = null;
+  for (const pk of state.pickups) {
+    if (pk.expires <= frame || me.build[pk.slot] !== 0 || frame < pk.armedAt || (pk.owner === me.slot && frame < pk.ownerArmedAt)) continue;
+    const dx = pk.x - body.x, dz = pk.z - body.z, d = Math.hypot(dx, dz);
+    if (d < 0.01 || d > CLAW_PICKUP_RANGE || (fx * dx + fz * dz) / d < CLAW_PICKUP_CONE_COS) continue;
+    if (part === null || d < part.distance) part = { id: pk.id, distance: d };
+  }
+  return part !== null ? { kind: 'part', id: part.id } : { kind: 'none' };
 }
 
 function slickGripMul(slicks: readonly Slick[], x: number, z: number, slot: number): number {
@@ -651,6 +730,10 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   let players = basePlayers;
   let slicks = state.slicks;
   let blobs = state.blobs;
+  /** Grabs that ran out of time this tick: the grabber steals a part (resolved with the other steals after the physics step). */
+  const grabSteals: { attacker: number; victim: number }[] = [];
+  /** Loose parts a claw reached for this tick: slot of the grabber -> pickup id. */
+  const clawPickups = new Map<number, number>();
   let phase = state.phase;
   let phaseStart = state.phaseStart;
   let finishOrder = state.finishOrder;
@@ -695,6 +778,12 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       let trailLeft = p.trailLeft;
       let spinLeft = p.spinLeft;
       let swing = p.swing;
+      let grab = p.grab;
+      let grabbedBy = p.grabbedBy;
+      let lastGrab = p.lastGrab;
+      let struggle = p.struggle;
+      let steerSign = p.steerSign;
+      let grabImmuneUntil = p.grabImmuneUntil;
       const frozen = !racing || frame < p.frozenUntil;
 
       if (racing && !frozen) {
@@ -716,12 +805,65 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
           }
         }
 
+        // Crab Claws: a grab in progress ends when time runs out, the rival breaks free, or the rival is gone.
+        if (grab !== null) {
+          const victim = state.players[grab.target];
+          const vb = victim === undefined ? undefined : deterministicPhysicsBodyById3D(world, carId(grab.target));
+          const gone = victim === undefined || vb === undefined || victim.finishTick >= 0 || !victim.inRace || p.build.arms !== ARM_CLAWS || Math.hypot(vb.x - body.x, vb.z - body.z) > 14;
+          if (gone || victim.grabbedBy !== p.slot) {
+            lastGrab = { partner: grab.target, until: frame + GRAB_SHIELD_TICKS };
+            ropesToRemove.push(grabId(p.slot));
+            armsCooldown = CLAW_FREED_COOLDOWN;
+            grab = null;
+          } else if (grab.ticksLeft <= 1) {
+            lastGrab = { partner: grab.target, until: frame + GRAB_SHIELD_TICKS };
+            ropesToRemove.push(grabId(p.slot));
+            grabSteals.push({ attacker: p.slot, victim: grab.target });
+            armsCooldown = CLAW_GRAB_COOLDOWN;
+            grab = null;
+          } else {
+            grab = { ...grab, ticksLeft: grab.ticksLeft - 1 };
+          }
+        } else if (p.build.arms === ARM_CLAWS && armsEdge && armsCooldown === 0) {
+          const target = findGrabTarget(world, state, frame, p, body);
+          if (target.kind === 'rival') {
+            grab = { target: target.slot, ticksLeft: CLAW_GRAB_TICKS, maxLength: Math.max(2.8, target.distance) };
+          } else if (target.kind === 'part') {
+            clawPickups.set(p.slot, target.id);
+            armsCooldown = CLAW_PICKUP_COOLDOWN;
+          } else {
+            armsCooldown = CLAW_MISS_COOLDOWN;
+          }
+        }
+
         if (p.build.head === HEAD_SLIME && headEdge && headCooldown === 0 && trailLeft === 0) {
           trailLeft = HEADS.slime.spewTicks;
           headCooldown = HEADS.slime.cooldownTicks;
           newBlobs.push(launchBlob(body, p.slot, input.slimeFwd));
         }
         if (trailLeft > 0) trailLeft -= 1;
+      }
+
+      // Held in somebody's claws: swinging the steering from side to side breaks free.
+      if (grabbedBy >= 0) {
+        const side = Math.abs(input.steer) >= 50 ? Math.sign(input.steer) : 0;
+        if (side !== 0 && steerSign !== 0 && side !== steerSign) struggle += 1;
+        if (side !== 0) steerSign = side;
+        if (struggle >= STRUGGLE_FLIPS) {
+          grabbedBy = -1;
+          struggle = 0;
+          steerSign = 0;
+          grabImmuneUntil = frame + GRAB_IMMUNE_TICKS;
+        }
+      } else {
+        struggle = 0;
+        steerSign = 0;
+      }
+      if (grab !== null) {
+        const victimBody = deterministicPhysicsBodyById3D(world, carId(grab.target));
+        if (victimBody !== undefined) {
+          joints.push({ id: grabId(p.slot), type: 'distance', a: carId(p.slot), b: carId(grab.target), anchorA: { x: 0, y: 0, z: 0 }, anchorB: { x: 0, y: 0, z: 0 }, maxLength: grab.maxLength });
+        }
       }
 
       if (swing !== null) {
@@ -748,6 +890,10 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
           const target = prep.checkpoints[Math.min(p.nextCheckpoint, prep.checkpoints.length - 1)]!;
           respawns.push(chassisBody(p.slot, p.build, last.x, last.z, yawToward(last.x, last.z, target.x, target.z)));
           frozenUntil = frame + RESET_FREEZE_TICKS;
+          if (grabbedBy >= 0) {
+            grabbedBy = -1;
+            grabImmuneUntil = frame + GRAB_IMMUNE_TICKS;
+          }
           if (swing !== null) {
             ropesToRemove.push(ropeId(p.slot));
             swing = null;
@@ -814,12 +960,28 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         trailLeft,
         spinLeft,
         swing,
+        grab,
+        grabbedBy,
+        lastGrab,
+        struggle,
+        steerSign,
+        grabImmuneUntil,
         resetHold,
         tippedTicks,
         getUpReadyAt,
         frozenUntil,
       };
       return p;
+    });
+
+    // Who is being held: set from the grabbers' side once the tick's decisions are made.
+    const held = new Map<number, number>();
+    for (const g of players) if (g.grab !== null) held.set(g.grab.target, g.slot);
+    players = players.map((pl) => {
+      const by = held.get(pl.slot);
+      if (by !== undefined && pl.grabbedBy < 0 && frame >= pl.grabImmuneUntil) return { ...pl, grabbedBy: by };
+      if (by === undefined && pl.grabbedBy >= 0) return { ...pl, grabbedBy: -1, struggle: 0, steerSign: 0 };
+      return pl;
     });
 
     if (impulses.length > 0) world = applyDeterministicImpulses3D(world, impulses);
@@ -839,9 +1001,14 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
 
   if (driving) ({ world, activeCells } = syncBuildings(world, prep, players, activeCells));
   const preSpeed = new Map<number, number>();
+  /** Velocities (metres per tick) just before the step: the real approach speed of a crash (the engine's own figure is measured after its solver has already slowed the bodies). */
+  const preVelocity = new Map<number, { vx: number; vz: number }>();
   for (const p of players) {
     const b = deterministicPhysicsBodyById3D(world, carId(p.slot));
-    if (b !== undefined) preSpeed.set(p.slot, Math.hypot(b.vx, b.vz) * TICK_RATE);
+    if (b !== undefined) {
+      preSpeed.set(p.slot, Math.hypot(b.vx, b.vz) * TICK_RATE);
+      preVelocity.set(p.slot, { vx: b.vx, vz: b.vz });
+    }
   }
   const stepped = stepDeterministicPhysicsWorld3D(world, { gravityY: GRAVITY_Y, dtTicks: 1, joints, computeChecksum: false });
   world = stepped.world;
@@ -867,7 +1034,13 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     if (finishedNow.length > 0) finishOrder = [...finishOrder, ...finishedNow];
 
     // --- hits and part loss ---
-    const hitAt = new Map<number, { x: number; z: number }>();
+    const hitAt = new Map<number, { x: number; z: number; weight: number }>();
+    /** True while two monsters are in a grab (or just out of one): they cannot crash into each other or ram-steal. */
+    const shielded = (a: number, b: number): boolean => {
+      const pa = players[a], pb = players[b];
+      if (pa === undefined || pb === undefined) return false;
+      return pa.grab?.target === b || pb.grab?.target === a || (pa.lastGrab?.partner === b && frame < pa.lastGrab.until) || (pb.lastGrab?.partner === a && frame < pb.lastGrab.until);
+    };
     const steals: { attacker: number; victim: number; x: number; z: number }[] = [];
     const stealing = new Set<number>();
     const stolenFrom = new Set<number>();
@@ -886,15 +1059,33 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const behindVictim = (Math.sin(yv) * dx + Math.cos(yv) * dz) / dist; // victim's heading points away from the attacker
       return facingVictim >= CLAW_REAR_COS && behindVictim >= CLAW_REAR_COS;
     };
+    // A grab that was held to the end steals a part, the same way a rear hit does.
+    for (const gs of grabSteals) {
+      if (stealing.has(gs.attacker) || stolenFrom.has(gs.victim)) continue;
+      const vb = deterministicPhysicsBodyById3D(world, carId(gs.victim));
+      if (vb === undefined) continue;
+      steals.push({ attacker: gs.attacker, victim: gs.victim, x: vb.x, z: vb.z });
+      stealing.add(gs.attacker);
+      stolenFrom.add(gs.victim);
+    }
     const contacts = [...stepped.contacts]
       .filter((c) => c.type === 'enter' && !c.trigger)
       .sort((a, b) => (a.pair < b.pair ? -1 : a.pair > b.pair ? 1 : 0));
     for (const c of contacts) {
-      const closing = (c.closingSpeed ?? 0) * TICK_RATE;
+      let closing = (c.closingSpeed ?? 0) * TICK_RATE;
       const sa = slotOfCar(c.a), sb = slotOfCar(c.b);
+      if (sa >= 0 && sb >= 0) {
+        // how fast the two monsters were really approaching each other just before they touched
+        const ba = deterministicPhysicsBodyById3D(world, carId(sa)), bb = deterministicPhysicsBodyById3D(world, carId(sb));
+        const va = preVelocity.get(sa), vb = preVelocity.get(sb);
+        if (ba !== undefined && bb !== undefined && va !== undefined && vb !== undefined) {
+          const dx = bb.x - ba.x, dz = bb.z - ba.z, d = Math.hypot(dx, dz);
+          if (d > 0.01) closing = Math.max(closing, (((va.vx - vb.vx) * dx + (va.vz - vb.vz) * dz) / d) * TICK_RATE);
+        }
+      }
       const point = { x: c.point?.x ?? 0, z: c.point?.z ?? 0 };
       if (sa >= 0 && sb >= 0) {
-        if (closing >= HIT_MIN_CLOSING_MS) {
+        if (closing >= HIT_MIN_CLOSING_MS && !shielded(sa, sb)) {
           for (const [attacker, victim] of [[sa, sb], [sb, sa]] as const) {
             if (clawsCanSteal(attacker, victim)) {
               steals.push({ attacker, victim, x: point.x, z: point.z });
@@ -902,12 +1093,13 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
               stolenFrom.add(victim);
             }
           }
-          hitAt.set(sa, point);
-          hitAt.set(sb, point);
+          const weight = closing >= HIT_HEAVY_CLOSING_MS ? 2 : 1; // a harder crash does more damage
+          hitAt.set(sa, { ...point, weight });
+          hitAt.set(sb, { ...point, weight });
         }
       } else {
         const car = sa >= 0 ? sa : sb;
-        if (car >= 0 && (preSpeed.get(car) ?? 0) >= WALL_HIT_MIN_SPEED_MS && closing >= WALL_HIT_MIN_CLOSING_MS) hitAt.set(car, point);
+        if (car >= 0 && (preSpeed.get(car) ?? 0) >= WALL_HIT_MIN_SPEED_MS && closing >= WALL_HIT_MIN_CLOSING_MS) hitAt.set(car, { ...point, weight: 1 });
       }
     }
     const changed = new Set<number>();
@@ -944,7 +1136,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const point = hitAt.get(p.slot);
       if (point === undefined || p.finishTick >= 0 || frame < p.hitCooldownUntil) return p;
       const body = BODIES[p.build.body] ?? BODIES[0]!;
-      const hits = p.hits + 1;
+      const hits = p.hits + point.weight;
       const equipped = SLOT_KEYS.filter((k) => p.build[k] !== 0);
       if (hits < body.hitsToLose || equipped.length === 0) {
         return { ...p, hits: Math.min(hits, body.hitsToLose), hitCooldownUntil: frame + HIT_COOLDOWN_TICKS };
@@ -968,6 +1160,21 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       changed.add(p.slot);
       return { ...p, build: { ...p.build, [lostSlot]: 0 }, hits: 0, hitCooldownUntil: frame + HIT_COOLDOWN_TICKS, partsLost: p.partsLost + 1, lastLossTick: frame };
     });
+
+    // --- claws reaching for a loose part: it goes straight into the empty slot ---
+    if (clawPickups.size > 0) {
+      const taken = new Set<number>();
+      players = players.map((p) => {
+        const id = clawPickups.get(p.slot);
+        if (id === undefined) return p;
+        const pk = pickups.find((x) => x.id === id);
+        if (pk === undefined || taken.has(pk.id) || p.build[pk.slot] !== 0) return p;
+        taken.add(pk.id);
+        changed.add(p.slot);
+        return { ...p, build: { ...p.build, [pk.slot]: pk.part }, partsGained: p.partsGained + 1 };
+      });
+      if (taken.size > 0) pickups = pickups.filter((pk) => !taken.has(pk.id));
+    }
 
     // --- pickups: driving through one fills an empty slot ---
     if (pickups.length > 0) {
@@ -995,21 +1202,27 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const edits: DeterministicPhysicsBody3D[] = [];
       const ropes: string[] = [];
       const lostSwing = new Set<number>();
+      const lostGrab = new Set<number>();
       const lostTrail = new Set<number>();
       for (const slot of [...changed].sort((a, b) => a - b)) {
         const cur = players[slot]!;
         const body = deterministicPhysicsBodyById3D(world, carId(slot));
         if (body !== undefined) edits.push(retuned(body, slot, cur.build));
+        if (cur.grab !== null && cur.build.arms !== ARM_CLAWS) {
+          ropes.push(grabId(slot));
+          lostGrab.add(slot);
+        }
         if (cur.swing !== null && cur.build.arms !== ARM_TENTACLES) {
           ropes.push(ropeId(slot));
           lostSwing.add(slot);
         }
         if (cur.trailLeft > 0 && cur.build.head !== HEAD_SLIME) lostTrail.add(slot);
       }
-      if (lostSwing.size > 0 || lostTrail.size > 0) {
+      if (lostSwing.size > 0 || lostTrail.size > 0 || lostGrab.size > 0) {
         players = players.map((pl) => ({
           ...pl,
           swing: lostSwing.has(pl.slot) ? null : pl.swing,
+          grab: lostGrab.has(pl.slot) ? null : pl.grab,
           trailLeft: lostTrail.has(pl.slot) ? 0 : pl.trailLeft,
         }));
       }
@@ -1060,6 +1273,8 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       armsCooldown: p.armsCooldown,
       headCooldown: p.headCooldown,
       swingPole: p.swing === null ? -1 : p.swing.pole,
+      grabbing: p.grab === null ? -1 : p.grab.target,
+      grabbedBy: p.grabbedBy,
       trailing: p.trailLeft > 0,
       tipped: p.tippedTicks >= TIP_TICKS,
       partsLost: p.partsLost,
