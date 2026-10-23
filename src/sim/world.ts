@@ -4,6 +4,7 @@
 
 import type { DeterministicPhysicsBody3D } from '@series-inc/rundot-syncplay/creator';
 import type { MapData } from './mapdata.js';
+import { trackFeaturesFor, type TrackFeatures } from './features.js';
 import { ARENA_HALF, CHECKPOINTS, OBSTACLES, POLES, START_DX, START_X0, START_Z } from './track.js';
 
 export interface Vec2 {
@@ -17,6 +18,8 @@ export interface PreparedMap {
   readonly checkpoints: readonly Vec2[];
   readonly anchors: readonly Vec2[];
   readonly staticBodies: readonly DeterministicPhysicsBody3D[];
+  /** Boost pads and oil patches along the route. */
+  readonly features: TrackFeatures;
   /** World-space spawn for a grid slot (metres) and the shared heading (radians). */
   startPose(slot: number): Vec2;
   readonly startYaw: number;
@@ -242,6 +245,7 @@ export function prepareMap(map: MapData): PreparedMap {
     checkpoints: map.checkpoints.map((c) => ({ x: m(c.x), z: m(c.z) })),
     anchors: map.anchors.map((a) => ({ x: m(a.x), z: m(a.z) })),
     staticBodies: buildStaticBodies(map),
+    features: trackFeaturesFor(map),
     startYaw: yaw,
     startPose(slot: number): Vec2 {
       // Two columns, rows spaced back along the heading.

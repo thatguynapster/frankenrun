@@ -7,6 +7,7 @@ export class Controls {
   private touchBrake = false;
   private touchArms = false;
   private touchHead = false;
+  private touchLegs = false;
   private touchSlimeFwd = false;
   private slimeTimer = 0;
   private touchGetUp = false;
@@ -50,6 +51,10 @@ export class Controls {
       this.touchSlimeFwd = false;
     }, 140); // long enough for the sim's 30 Hz tick to see the press
   }
+  setTouchLegs(on: boolean): void {
+    this.touchActive = true;
+    this.touchLegs = on;
+  }
   setTouchHead(on: boolean): void {
     this.touchActive = true;
     this.touchHead = on;
@@ -90,6 +95,7 @@ export class Controls {
       // the other client's prediction forces a rollback, so this roughly halves the re-simulation work.
       steer: Math.round((-screenSteer * 100) / 10) * 10,
       arms: this.down('KeyJ') || this.touchArms,
+      legs: this.down('KeyL') || this.touchLegs,
       head: this.down('KeyK', 'KeyI') || this.touchHead,
       slimeFwd: this.down('KeyI') || this.touchSlimeFwd,
       getUp: this.down('Space') || this.touchGetUp,

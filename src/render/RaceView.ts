@@ -69,6 +69,7 @@ export class RaceView {
   private readonly lobbyBackground = new THREE.Color(0x16122e);
   private debris: Debris[] = [];
   private rings: THREE.Mesh[] = [];
+  private padMats: THREE.MeshBasicMaterial[] = [];
   private worldGroup: THREE.Group | undefined;
   private anchors: { x: number; z: number }[] = [];
   private prep: PreparedMap | undefined;
@@ -150,6 +151,7 @@ export class RaceView {
     const group = new THREE.Group();
     this.worldGroup = group;
     this.rings = [];
+    this.padMats = [];
     this.wisps = [];
     this.applyTheme(themeFor(map.id));
     this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
@@ -187,6 +189,51 @@ export class RaceView {
       geo.computeVertexNormals();
       group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
     }
+
+    // Boost pads (glowing chevrons that pulse) and oil patches (dark, glossy) laid along the route.
+    this.padMats = [];
+    const features = this.prep.features;
+    const padGeo = new THREE.CircleGeometry(1, 6);
+    const chevron = new THREE.Shape();
+    chevron.moveTo(-0.7, -0.5);
+    chevron.lineTo(0, 0.2);
+    chevron.lineTo(0.7, -0.5);
+    chevron.lineTo(0.7, -0.15);
+    chevron.lineTo(0, 0.55);
+    chevron.lineTo(-0.7, -0.15);
+    const chevGeo = new THREE.ShapeGeometry(chevron);
+    for (const f of features.pads) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x3bf5ff, transparent: true, opacity: 0.85, depthWrite: false });
+      this.padMats.push(mat);
+      const disc = new THREE.Mesh(padGeo, new THREE.MeshBasicMaterial({ color: 0x0a2a3a, transparent: true, opacity: 0.8, depthWrite: false }));
+      disc.rotation.x = -Math.PI / 2;
+      disc.scale.setScalar(f.radius);
+      disc.position.set(f.x, 0.07, f.z);
+      group.add(disc);
+      for (let k = 0; k < 2; k += 1) {
+        const c = new THREE.Mesh(chevGeo, mat);
+        c.rotation.x = -Math.PI / 2;
+        c.rotation.z = Math.atan2(f.dx, f.dz) + Math.PI; // points down the road
+        c.scale.setScalar(f.radius * 0.9);
+        c.position.set(f.x + f.dx * (k - 0.5) * f.radius * 0.9, 0.09, f.z + f.dz * (k - 0.5) * f.radius * 0.9);
+        group.add(c);
+      }
+    }
+    const oilGeo = new THREE.CircleGeometry(1, 14);
+    const oilMat = new THREE.MeshBasicMaterial({ color: 0x07060d, transparent: true, opacity: 0.92, depthWrite: false });
+    const sheenMat = new THREE.MeshBasicMaterial({ color: 0x7a5cff, transparent: true, opacity: 0.35, depthWrite: false });
+    features.oils.forEach((f, i) => {
+      const puddle = new THREE.Mesh(oilGeo, oilMat);
+      puddle.rotation.x = -Math.PI / 2;
+      puddle.scale.set(f.radius, f.radius * (0.8 + (i % 3) * 0.08), 1);
+      puddle.position.set(f.x, 0.075, f.z);
+      group.add(puddle);
+      const sheen = new THREE.Mesh(oilGeo, sheenMat);
+      sheen.rotation.x = -Math.PI / 2;
+      sheen.scale.setScalar(f.radius * 0.45);
+      sheen.position.set(f.x + 0.5, 0.085, f.z - 0.4);
+      group.add(sheen);
+    });
 
     // Buildings with painted walls, lit windows and roofs, plus street lamps (see city.ts), merged per 100 m chunk.
     for (const object of buildCity(map, themeFor(map.id).cityTint)) group.add(object);
@@ -820,6 +867,8 @@ export class RaceView {
         this.shakeLeft = Math.max(0, this.shakeLeft - dtSeconds);
       }
       const next = local === undefined ? 0 : local.nextCheckpoint;
+      const glow = 0.6 + 0.35 * Math.sin(frame.frame * 0.25);
+      for (const mat of this.padMats) mat.opacity = glow;
       this.rings.forEach((ring, i) => {
         const mat = ring.material as THREE.MeshBasicMaterial;
         mat.opacity = i === next ? 0.38 : i < next ? 0.04 : 0.14;

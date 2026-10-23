@@ -1,5 +1,5 @@
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
-import { ARM_CLAWS, ARM_TENTACLES, HEAD_LANTERN, HEAD_SLIME, type GameProjection } from './sim/game.js';
+import { ARM_CLAWS, ARM_TENTACLES, HEAD_HUMP, HEAD_LANTERN, HEAD_SLIME, LEGS_HOPPER, type GameProjection } from './sim/game.js';
 
 const STORAGE_KEY = 'frankenrun.tips';
 /** How long a tip stays up if the player does not tap it away. */
@@ -111,7 +111,9 @@ export class TipCoach {
       if (raceTicks >= 270) {
         if (me.build.arms === ARM_TENTACLES) this.offer({ id: 'tentacles', text: 'Tentacles: hold the button near a pole to swing round it.' });
         if (me.build.arms === ARM_CLAWS) this.offer({ id: 'claws', text: 'Crab Claws: ram a rival from behind to steal a part, or press the button with a rival close ahead to grab and hold them. Hold on and you steal a part. The button also reaches for a loose part.' });
+        if (me.build.legs === LEGS_HOPPER) this.offer({ id: 'hopper', text: 'Hopper Haunches: hold the Leap button to crouch, let go to jump over cars and obstacles. You cannot steer in the air.' });
         if (me.build.head === HEAD_SLIME) this.offer({ id: 'slime', text: 'Slime Gland: tap the button to spit slime behind you and make rivals skid. Swipe the button up to throw it ahead.' });
+        if (me.build.head === HEAD_HUMP) this.offer({ id: 'hump', text: 'Hunchback Hump: drive over a part you cannot fit and the hump keeps it as a spare. It is fitted the moment a slot empties.' });
         if (me.build.head === HEAD_LANTERN) this.offer({ id: 'lantern', text: "Jack-o'-Lantern: follow the orange line on the road to the next checkpoint." });
       }
       // Reactive tips.

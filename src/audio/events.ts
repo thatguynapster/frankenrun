@@ -22,6 +22,7 @@ interface SlotMemory {
   swinging: boolean;
   grabbing: boolean;
   trailing: boolean;
+  airborne: boolean;
   finished: boolean;
   steppedDistance: number;
   lastStepAt: number;
@@ -70,6 +71,7 @@ export class AudioEvents {
         swinging: p.swingPole >= 0,
         grabbing: p.grabbing >= 0,
         trailing: p.trailing,
+        airborne: p.airborne,
         finished: p.finishTick >= 0,
         steppedDistance: 0,
         lastStepAt: 0,
@@ -120,6 +122,10 @@ export class AudioEvents {
       if (p.slot !== localSlot && p.grabbing >= 0 && !m.grabbing) events.push({ id: 'steal', slot: p.slot, gain: 0.7 }); // a claw snaps shut
       if (p.slot !== localSlot && p.swingPole >= 0 && !m.swinging) events.push({ id: 'tentacle', slot: p.slot });
       if (p.slot !== localSlot && p.trailing && !m.trailing) events.push({ id: 'slime', slot: p.slot });
+      // Hopper Haunches: a roar as it leaps, a heavy stomp as it lands.
+      if (p.airborne && !m.airborne) events.push({ id: 'growl', slot: p.slot, gain: 0.9 });
+      if (!p.airborne && m.airborne) events.push({ id: 'step', slot: p.slot, gain: 1 });
+      m.airborne = p.airborne;
       // A reset puts the monster back at its last checkpoint: a jump no speed could cover.
       if (racing && this.lastPhase === 'RACING' && p.present && Math.hypot(p.x - m.x, p.z - m.z) > RESPAWN_JUMP) {
         events.push({ id: 'respawn', slot: p.slot });

@@ -6,6 +6,7 @@ import { SHOW_LEADERBOARD, loadBoard, submitTime, type Board, type BoardPeriod, 
 import { readInvite, shareResult, shareRoom, type Invite } from './share.js';
 import { makeSessionConfig } from './sim/runtime.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
+import { Minimap } from './render/Minimap.js';
 import { RaceView } from './render/RaceView.js';
 import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS, TICK_RATE } from './sim/parts.js';
@@ -190,6 +191,7 @@ export class Game {
   private shareNote = '';
   private shareNoteTimer = 0;
   private map: MapData | undefined;
+  private readonly minimap: Minimap;
   private build: Build = DEFAULT_BUILD;
   private ready = false;
   private wantRematch = false;
@@ -259,6 +261,7 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.view = new RaceView(container);
+    this.minimap = new Minimap(container.parentElement ?? container);
     this.unsubscribe = this.runner.subscribe((snap) => {
       this.snapshot = snap;
       if (snap.roomCode) this.lastRoom = snap.roomCode;
@@ -798,6 +801,7 @@ export class Game {
     const r0 = performance.now();
     const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
     this.watchLobby(now);
+    this.minimap.draw(frame, this.snapshot?.localSlot ?? 0, this.screen === 'play' && !lobbyNow);
     this.view.setStyles(this.styleTable());
     this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
     this.perfRender += performance.now() - r0;
@@ -884,6 +888,7 @@ export class Game {
     try {
       this.map = getPreparedMap(id).map;
       this.view.setMap(this.map);
+      this.minimap.setMap(this.map);
     } catch {
       // not loaded (should not happen: every route is loaded before a room is joined)
     }
@@ -908,7 +913,10 @@ export class Game {
       // The map must be loaded and digest-verified before any session starts: it is a deterministic input.
       const loaded = await Promise.all(maps.map((id) => ensureMap(id)));
       this.map = loaded.length === 1 ? loaded[0] : undefined;
-      if (this.map) this.view.setMap(this.map);
+      if (this.map) {
+        this.view.setMap(this.map);
+        this.minimap.setMap(this.map);
+      }
       await withTimeout(start(), CONNECT_TIMEOUT_MS, () => this.runner.stop());
       this.bindNames();
       this.audioEvents.reset();

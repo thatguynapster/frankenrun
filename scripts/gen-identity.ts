@@ -8,7 +8,7 @@ import { describeKinetixAuxiliaryAsset } from '@series-inc/rundot-syncplay/core/
 import { MAX_PLAYERS } from '../src/sim/limits.ts';
 
 // The generated file must NOT appear in its own module list.
-const RUNTIME_MODULES = ['sim/limits.ts', 'sim/game.ts', 'sim/parts.ts', 'sim/track.ts', 'sim/world.ts', 'sim/mapdata.ts', 'sim/runtime.ts', 'sim/input-codec.ts', 'sim/bot.ts'];
+const RUNTIME_MODULES = ['sim/limits.ts', 'sim/game.ts', 'sim/parts.ts', 'sim/track.ts', 'sim/world.ts', 'sim/mapdata.ts', 'sim/runtime.ts', 'sim/input-codec.ts', 'sim/bot.ts', 'sim/features.ts'];
 
 // Baked maps are pinned into the identity by digest, so a client with a different map can't join a room.
 const MAP_DIR = 'public/cdn-assets/accra';

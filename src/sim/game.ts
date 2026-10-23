@@ -2,6 +2,7 @@
 // input and never reads Math.random, Date, performance.now, the DOM or the network.
 // Time is counted in ticks (TICK_RATE ticks = 1 s).
 
+import { CRATE_PERIOD_TICKS, featureAt, OIL_GRIP_MUL, PAD_ACCEL } from './features.js';
 import {
   applyDeterministicForces3D,
   applyDeterministicImpulses3D,
@@ -182,6 +183,12 @@ export interface PlayerState {
   readonly finishTick: number; // -1 until finished
   readonly prevArms: boolean;
   readonly prevHead: boolean;
+  /** Hopper Haunches: ticks of charge held so far, the tick the next leap is allowed, and ticks since a leap while still in the air (0 = on the ground). */
+  readonly hopCharge: number;
+  readonly hopReadyAt: number;
+  readonly hopAir: number;
+  /** Hunchback Hump: the spare part being carried (slot and part id), if any. */
+  readonly spare: { readonly slot: SlotKey; readonly part: number } | null;
   readonly armsCooldown: number;
   readonly headCooldown: number;
   readonly trailLeft: number;
@@ -318,6 +325,12 @@ export interface PlayerView {
   readonly finishTick: number;
   readonly armsCooldown: number;
   readonly headCooldown: number;
+  /** Hopper Haunches: 0..1 of a full charge, ticks until the next leap, and whether the monster is mid-leap. */
+  readonly hopCharge: number;
+  readonly hopCooldown: number;
+  readonly airborne: boolean;
+  /** Hunchback Hump: the spare part in the sack. */
+  readonly spare: { readonly slot: SlotKey; readonly part: number } | null;
   readonly swingPole: number; // -1 when not swinging
   /** Slot of the rival held in this monster's claws, or -1. */
   readonly grabbing: number;
@@ -362,6 +375,8 @@ const ropeId = (slot: number): string => `rope-${slot}`;
 const PIVOT_SPEED_SIGN = -1;
 export const ARM_TENTACLES = 1;
 export const ARM_CLAWS = 2;
+export const LEGS_HOPPER = 3;
+export const HEAD_HUMP = 3;
 export const HEAD_SLIME = 1;
 export const HEAD_LANTERN = 2;
 
@@ -472,6 +487,10 @@ function newPlayer(slot: number): PlayerState {
     finishTick: -1,
     prevArms: false,
     prevHead: false,
+    hopCharge: 0,
+    hopReadyAt: 0,
+    hopAir: 0,
+    spare: null,
     armsCooldown: 0,
     headCooldown: 0,
     trailLeft: 0,
@@ -1001,7 +1020,44 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
 
       // --- vehicle controls ---
       const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
-      const gripMul = slickGripMul(state.slicks, body.x, body.z, p.slot);
+
+      // --- Hopper Haunches: hold to crouch and charge, let go to leap; no steering until it lands ---
+      const hop = legsOf(p.build).hop;
+      let hopCharge = p.hopCharge;
+      let hopReadyAt = p.hopReadyAt;
+      let hopAir = p.hopAir;
+      const grounded = body.y < RIDE_HEIGHT + 0.35;
+      if (hop === undefined || !live || grabbedBy >= 0) {
+        hopCharge = 0;
+        hopAir = 0;
+      } else {
+        if (hopAir > 0) {
+          hopAir += 1;
+          if ((grounded && hopAir > 6) || hopAir > 120) hopAir = 0;
+          hopCharge = 0;
+        } else if (input.legs && frame >= hopReadyAt) {
+          hopCharge = Math.min(hop.chargeTicks, hopCharge + 1);
+        } else if (hopCharge > 0) {
+          if (!input.legs && grounded) {
+            const frac = Math.max(0.4, hopCharge / hop.chargeTicks);
+            const fwd = hopCharge >= hop.minChargeTicks ? hop.leapForward * frac : 0;
+            const fx = 2 * (o.x * o.z + o.w * o.y), fz = 1 - 2 * (o.x * o.x + o.y * o.y);
+            const fl = Math.hypot(fx, fz) || 1;
+            const mass = MASS_UNIT * massOf(p.build);
+            impulses.push({
+              bodyId: carId(p.slot),
+              impulse: { x: (fx / fl) * fwd * mass / TICK_RATE, y: hop.leapUp * frac * mass / TICK_RATE, z: (fz / fl) * fwd * mass / TICK_RATE },
+              worldPoint: { x: body.x, y: body.y, z: body.z },
+            });
+            hopAir = 1;
+            hopReadyAt = frame + hop.cooldownTicks;
+          }
+          hopCharge = 0;
+        }
+      }
+      const airborne = hopAir > 0;
+      const oil = featureAt(prep.features.oils, body.x, body.z) !== undefined;
+      const gripMul = Math.min(slickGripMul(state.slicks, body.x, body.z, p.slot), oil ? OIL_GRIP_MUL : 1);
       const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul));
       // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
       // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
@@ -1009,12 +1065,18 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const pivoting = live && Math.abs(input.steer) >= PIVOT_MIN_STEER && speedMs < PIVOT_SPEED;
       const result = stepDeterministicVehicle3D(vehicle, {
         // No reverse: a negative throttle (S / down) is a brake instead.
-        throttle: live && !pivoting ? clampInt(input.throttle / 10, 0, 10) : 0,
-        steer: live ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
+        throttle: live && !pivoting ? clampInt((input.throttle / 10) * (hopCharge > 0 && hop !== undefined ? hop.chargeThrottle : 1), 0, 10) : 0,
+        steer: live && !airborne ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
         brake: live ? (input.throttle < 0 ? 10 : 0) : 10,
       }, world);
       for (const imp of result.impulses) {
         impulses.push({ bodyId: imp.bodyId, impulse: imp.impulse, worldPoint: imp.point });
+      }
+      // A boost pad shoves a driving monster along the road (it must be moving that way: no launching backwards).
+      const pad = live ? featureAt(prep.features.pads, body.x, body.z) : undefined;
+      if (pad !== undefined && body.vx * pad.dx + body.vz * pad.dz > -0.05) {
+        const push = MASS_UNIT * massOf(p.build) * PAD_ACCEL;
+        impulses.push({ bodyId: carId(p.slot), impulse: { x: pad.dx * push, y: 0, z: pad.dz * push }, worldPoint: { x: body.x, y: body.y, z: body.z } });
       }
       if (pivoting) {
         const fade = Math.min(1, (1 - speedMs / PIVOT_SPEED) * 2.5); // full torque until 60% of the pivot speed
@@ -1029,6 +1091,9 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         ...p,
         prevArms: input.arms,
         prevHead: input.head,
+        hopCharge,
+        hopReadyAt,
+        hopAir,
         armsCooldown,
         headCooldown,
         trailLeft,
@@ -1089,6 +1154,21 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   world = stepped.world;
   let pickups = state.pickups.filter((pk) => pk.expires > frame);
   let nextPickupId = state.nextPickupId;
+
+  // Loose parts appear on the road along the route every so often, so a stripped monster can build itself back up.
+  if (racing && prep.features.crates.length > 0) {
+    const since = frame - state.raceStart;
+    prep.features.crates.forEach((crate, i) => {
+      if (since < CRATE_PERIOD_TICKS / 2 || (since + i * 37) % CRATE_PERIOD_TICKS !== 0) return;
+      if (pickups.some((pk) => Math.hypot(pk.x - crate.x, pk.z - crate.z) < 2)) return;
+      const h = hash32(state.seed, frame, 1000 + i);
+      const slot = SLOT_KEYS[h % SLOT_KEYS.length]!;
+      const count = (slot === 'legs' ? LEG_PARTS : slot === 'arms' ? ARM_PARTS : HEAD_PARTS).length - 1;
+      const part = 1 + ((h >>> 8) % count);
+      pickups = [...pickups, { id: nextPickupId, slot, part, x: crate.x, z: crate.z, expires: frame + PICKUP_LIFE_TICKS, armedAt: frame, owner: -1, ownerArmedAt: frame }];
+      nextPickupId += 1;
+    });
+  }
 
   if (racing) {
     const finishedNow: number[] = [];
@@ -1260,17 +1340,29 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         if (body === undefined) return p;
         let q = p;
         for (const pk of pickups) {
-          if (taken.has(pk.id) || q.build[pk.slot] !== 0) continue;
+          if (taken.has(pk.id)) continue;
+          // A full slot means the part cannot be fitted, unless a Hunchback Hump has room for it as a spare.
+          const sack = q.build[pk.slot] !== 0 && q.build.head === HEAD_HUMP && q.spare === null && pk.slot !== 'head';
+          if (q.build[pk.slot] !== 0 && !sack) continue;
           if (frame < pk.armedAt || (pk.owner === q.slot && frame < pk.ownerArmedAt)) continue;
           if (Math.hypot(body.x - pk.x, body.z - pk.z) > PICKUP_RADIUS) continue;
           taken.add(pk.id);
-          q = { ...q, build: { ...q.build, [pk.slot]: pk.part }, partsGained: q.partsGained + 1 };
+          q = sack ? { ...q, spare: { slot: pk.slot, part: pk.part }, partsGained: q.partsGained + 1 } : { ...q, build: { ...q.build, [pk.slot]: pk.part }, partsGained: q.partsGained + 1 };
         }
         if (q !== p) changed.add(q.slot);
         return q;
       });
       if (taken.size > 0) pickups = pickups.filter((pk) => !taken.has(pk.id));
     }
+
+    // Hunchback Hump: a spare part is fitted the moment its slot is empty, and is lost with the hump.
+    players = players.map((pl) => {
+      if (pl.spare === null) return pl;
+      if (pl.build.head !== HEAD_HUMP) return { ...pl, spare: null };
+      if (pl.build[pl.spare.slot] !== 0) return pl;
+      changed.add(pl.slot);
+      return { ...pl, build: { ...pl.build, [pl.spare.slot]: pl.spare.part }, spare: null, partsGained: pl.partsGained + 1 };
+    });
 
     // A changed build changes mass and top speed: retune each affected body, and drop abilities that lost their part.
     if (changed.size > 0) {
@@ -1352,6 +1444,10 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       grabbedBy: p.grabbedBy,
       trailing: p.trailLeft > 0,
       tipped: p.tippedTicks >= TIP_TICKS,
+      hopCharge: (legsOf(p.build).hop?.chargeTicks ?? 0) > 0 ? p.hopCharge / legsOf(p.build).hop!.chargeTicks : 0,
+      hopCooldown: Math.max(0, p.hopReadyAt - state.frame),
+      airborne: p.hopAir > 0,
+      spare: p.spare,
       partsLost: p.partsLost,
       partsGained: p.partsGained,
       partsStolen: p.partsStolen,

@@ -58,6 +58,9 @@ export interface Motion {
   /** 1 right after a steal or a grab, decaying to 0: claws snap shut. */
   readonly snap: number;
   readonly trailing: boolean;
+  /** Hopper Haunches: 0..1 of a full charge (crouching), and true while mid-leap. */
+  readonly charge: number;
+  readonly airborne: boolean;
 }
 
 export interface Rig {
@@ -72,7 +75,7 @@ const C = {
   bone: 0xe9e1c9, boneShade: 0xb9ae8c, rib: 0xd9d0b4, eyeYellow: 0xffe84a, eyeGreen: 0x6bff7a,
   fur: 0xf08a24, furDark: 0xb8541a, spider: 0x2a1c38, spiderGlow: 0xff7a1a,
   tentacle: 0xc44bd8, tentacleTip: 0xe27bf0, claw: 0xd8452e, clawLight: 0xe86a4a,
-  pumpkin: 0xff8a1f, pumpkinDark: 0xd96a10, stem: 0x5a7a2a, flame: 0xffb347, slime: 0x7dff3a, slimeLight: 0xd4ff9a,
+  sack: 0x8a6a4a, sackDark: 0x5e4630, strap: 0x3a2a1c, hop: 0x4fbf5a, hopDark: 0x2f8a3c, spring: 0xcfd6dd, pumpkin: 0xff8a1f, pumpkinDark: 0xd96a10, stem: 0x5a7a2a, flame: 0xffb347, slime: 0x7dff3a, slimeLight: 0xd4ff9a,
 } as const;
 
 // ---------- bodies ----------
@@ -373,7 +376,63 @@ const STUMPS: LegDef = {
   },
 };
 
-export const LEG_DEFS: readonly LegDef[] = [STUMPS, WEREWOLF_LEGS, SPIDER_LEGS];
+/** Frog-green haunches with spring coils round the shins and big flat feet; they crouch to charge and tuck in the air. */
+const HOPPER_LEGS: LegDef = {
+  id: 3,
+  name: 'Hopper Haunches',
+  hipHeight: 1.0,
+  stride: 1.6,
+  create(body) {
+    const thighPieces = cached('hop-thigh', () => {
+      const s = new Shape();
+      s.limb([0, 0, 0], [0, -0.5, 0.18], 0.26, 0.17, C.hop);
+      s.ico(0.3, 0, C.hop, { p: [0, -0.18, 0.04], s: [1, 1.25, 1.15] }); // big haunch
+      s.ico(0.19, 0, C.hopDark, { p: [0, -0.5, 0.18] }); // knee
+      return [{ geometry: s.build(), material: 'lit' as MatKind }];
+    });
+    const shinPieces = cached('hop-shin', () => {
+      const s = new Shape();
+      s.limb([0, 0, 0], [0, -0.42, -0.23], 0.12, 0.08, C.hopDark);
+      for (let i = 0; i < 2; i += 1) s.ring(0.12, 0.03, C.spring, { p: [0, -0.11 - i * 0.13, -0.06 - i * 0.07], r: [0.5, 0, 0] }); // spring coils
+      s.ico(0.13, 0, C.hopDark, { p: [0, -0.42, -0.23] }); // ankle
+      s.limb([0, -0.42, -0.23], [0, -0.5, 0.2], 0.13, 0.1, C.hop); // long foot
+      s.box(0.28, 0.06, 0.3, C.hopDark, { p: [0, -0.47, 0.2] }); // flat pad
+      s.box(0.24, 0.05, 0.05, C.ivory, { p: [0, -0.47, 0.36] }); // toe tips
+      return [{ geometry: s.build(), material: 'lit' as MatKind }];
+    });
+    const root = new THREE.Group();
+    const legs = [1, -1].map((side) => {
+      const thigh = meshGroup(thighPieces);
+      thigh.position.set(side * body.hipX, 0, 0);
+      const shin = meshGroup(shinPieces);
+      shin.position.set(0, -0.5, 0.18);
+      thigh.add(shin);
+      root.add(thigh);
+      return { thigh, shin };
+    });
+    return {
+      root,
+      animate: (m) => {
+        legs.forEach((leg, i) => {
+          // Both legs push together like a frog's: little bounding strides, not an alternating run.
+          const ph = m.phase + (i === 0 ? 0 : 0.5);
+          let thigh = -Math.sin(ph) * 0.6 * m.amp + 0.12;
+          let shin = 0.25 + 0.9 * Math.max(0, Math.cos(ph)) * m.amp;
+          thigh += m.charge * 0.55; // crouch: knees forward
+          shin += m.charge * 0.9;
+          if (m.airborne) {
+            thigh = -0.7;
+            shin = 1.5; // tucked up in the air
+          }
+          leg.thigh.rotation.x = thigh;
+          leg.shin.rotation.x = shin;
+        });
+      },
+    };
+  },
+};
+
+export const LEG_DEFS: readonly LegDef[] = [STUMPS, WEREWOLF_LEGS, SPIDER_LEGS, HOPPER_LEGS];
 
 // ---------- arms ----------
 
@@ -597,7 +656,33 @@ const LANTERN: HeadDef = {
   },
 };
 
-export const HEAD_DEFS: readonly HeadDef[] = [NO_HEAD, SLIME, LANTERN];
+/** A lumpy sack on the back of the head, held on by a strap; it swells when it carries a spare part (the HUD says which). */
+const HUMP: HeadDef = {
+  id: 3,
+  name: 'Hunchback Hump',
+  replacesHead: false,
+  create() {
+    const pieces = cached('hump-sack', () => {
+      const s = new Shape();
+      s.ico(0.42, 1, C.sack, { p: [0, 0.15, -0.5], s: [1.1, 1.05, 0.95] }); // the lump
+      s.ico(0.2, 0, C.sackDark, { p: [0.2, 0.4, -0.55] }); // patch
+      s.ico(0.13, 0, C.sackDark, { p: [-0.22, -0.02, -0.7] });
+      s.limb([-0.3, 0.55, -0.2], [0.05, -0.1, -0.15], 0.05, 0.05, C.strap, 5); // strap over the shoulder
+      s.cyl(0.07, 0.07, 0.1, 6, C.steel, { p: [0, 0.1, -0.12], r: [Math.PI / 2, 0, 0] }); // buckle
+      return [{ geometry: s.build(), material: 'lit' as MatKind }];
+    });
+    const root = meshGroup(pieces);
+    return {
+      root,
+      animate: (m) => {
+        const pulse = 1 + Math.sin(m.time * 1.6) * 0.025 * (1 + m.speed01);
+        root.scale.set(pulse, 1 / pulse, pulse);
+      },
+    };
+  },
+};
+
+export const HEAD_DEFS: readonly HeadDef[] = [NO_HEAD, SLIME, LANTERN, HUMP];
 
 /** The body's own head (skull or brute face), used unless a head part replaces it. */
 export function baseHead(body: BodyDef): THREE.Group {

@@ -33,6 +33,22 @@ export interface LegsDef {
   /** Drive multiplier when there is no road under the monster (1 = no penalty). */
   readonly offRoadMul: number;
   readonly mass: number;
+  /** Legs that can leap: hold the legs button to charge, let go to jump. */
+  readonly hop?: HopDef;
+}
+
+export interface HopDef {
+  /** Ticks of holding for a full charge. */
+  readonly chargeTicks: number;
+  /** A release before this many ticks of charge only gives a small hop. */
+  readonly minChargeTicks: number;
+  /** Upward speed at a full charge, metres per second (a small hop gets 40% of it). */
+  readonly leapUp: number;
+  /** Extra forward speed at a full charge, metres per second. */
+  readonly leapForward: number;
+  readonly cooldownTicks: number;
+  /** Share of the throttle kept while crouching to charge. */
+  readonly chargeThrottle: number;
 }
 
 export interface ArmsDef {
@@ -74,14 +90,25 @@ export const BODIES: readonly BodyDef[] = [
 
 // Part tables are indexed by part id; id 0 is an empty slot (a monster that never had, or has lost, that part).
 const NO_LEGS: LegsDef = { name: 'Stumps', blurb: 'No legs: slow but steady', driveMul: 1, topSpeedMul: 1, gripMul: 1, offRoadMul: 0.5, mass: 0 };
-export const LEGS: Readonly<Record<'none' | 'werewolf' | 'spider', LegsDef>> = {
+export const LEGS: Readonly<Record<'none' | 'werewolf' | 'spider' | 'hopper', LegsDef>> = {
   none: NO_LEGS,
   werewolf: { name: 'Werewolf Legs', blurb: 'Fastest on straights, slides wide in corners', driveMul: 1.35, topSpeedMul: 1.25, gripMul: 0.7, offRoadMul: 0.5, mass: 0 },
   // Spider Legs: the spec's wall climbing needs baked low obstacles, so for now they give grip and rough-ground
   // traction (crosses grass, gutters and medians almost unslowed) at the price of top speed.
   spider: { name: 'Spider Legs', blurb: 'Grips corners and rough ground, 25% slower', driveMul: 1, topSpeedMul: 0.75, gripMul: 1.2, offRoadMul: 0.9, mass: 0 },
+  // Hopper Haunches: a charged leap over parked cars and gaps, paid for with a slower, looser everyday drive. No steering in the air.
+  hopper: {
+    name: 'Hopper Haunches',
+    blurb: 'Hold to charge, release to leap over obstacles; no steering in the air',
+    driveMul: 0.95,
+    topSpeedMul: 0.9,
+    gripMul: 0.85,
+    offRoadMul: 0.7,
+    mass: 0.05,
+    hop: { chargeTicks: seconds(0.8), minChargeTicks: seconds(0.25), leapUp: 7.2, leapForward: 7, cooldownTicks: seconds(3), chargeThrottle: 0.5 },
+  },
 };
-export const LEG_PARTS: readonly LegsDef[] = [LEGS.none, LEGS.werewolf, LEGS.spider];
+export const LEG_PARTS: readonly LegsDef[] = [LEGS.none, LEGS.werewolf, LEGS.spider, LEGS.hopper];
 
 const NO_ARMS: ArmsDef = { name: 'No arms', blurb: 'Empty slot', mass: 0, grabRange: 0, swingTicks: 0, cooldownTicks: 0, missCooldownTicks: 0, missSpinTicks: 0, missSpinTorque: 0 };
 export const ARMS: Readonly<Record<'none' | 'tentacles' | 'claws', ArmsDef>> = {
@@ -103,7 +130,7 @@ export const ARMS: Readonly<Record<'none' | 'tentacles' | 'claws', ArmsDef>> = {
 export const ARM_PARTS: readonly ArmsDef[] = [ARMS.none, ARMS.tentacles, ARMS.claws];
 
 const NO_HEAD: HeadDef = { name: 'No head part', blurb: 'Empty slot', mass: 0, spewTicks: 0, blobAngleDeg: 0, blobBack: 0, blobAhead: 0, slickLifeTicks: 0, slickRadius: 0, slickGripMul: 1, cooldownTicks: 0 };
-export const HEADS: Readonly<Record<'none' | 'slime' | 'lantern', HeadDef>> = {
+export const HEADS: Readonly<Record<'none' | 'slime' | 'lantern' | 'hump', HeadDef>> = {
   none: NO_HEAD,
   slime: {
     name: 'Slime Gland',
@@ -120,8 +147,10 @@ export const HEADS: Readonly<Record<'none' | 'slime' | 'lantern', HeadDef>> = {
   },
   // Jack-o'-Lantern Head is passive: it lights up the shortcut to the next checkpoint (HUD side only).
   lantern: { ...NO_HEAD, name: "Jack-o'-Lantern", blurb: 'Lights the way to the next checkpoint' },
+  // Hunchback Hump: a sack that carries one spare part (not a head part) and swaps it in when that slot is empty.
+  hump: { ...NO_HEAD, name: 'Hunchback Hump', blurb: 'Carries one spare part and fits it when a slot empties; a bit heavier', mass: 0.2 },
 };
-export const HEAD_PARTS: readonly HeadDef[] = [HEADS.none, HEADS.slime, HEADS.lantern];
+export const HEAD_PARTS: readonly HeadDef[] = [HEADS.none, HEADS.slime, HEADS.lantern, HEADS.hump];
 
 // Race flow
 export const COUNTDOWN_TICKS = 90;

@@ -5,7 +5,7 @@ import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type Graphics, type UiState } from './Game';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts';
-import { ARM_CLAWS, ARM_TENTACLES, HEAD_SLIME, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
+import { ARM_CLAWS, ARM_TENTACLES, HEAD_HUMP, HEAD_SLIME, LEGS_HOPPER, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
 import './style.css';
 
 const TICK = 30;
@@ -669,6 +669,12 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
               {me.build[key] === 0 ? 'empty' : parts[me.build[key]]?.name}
             </span>
           ))}
+          {me.build.head === HEAD_HUMP && (
+            <span className={`part-slot spare ${me.spare === null ? 'empty' : ''}`}>
+              <small>Spare</small>
+              {me.spare === null ? 'empty' : (me.spare.slot === 'legs' ? LEG_PARTS : me.spare.slot === 'arms' ? ARM_PARTS : HEAD_PARTS)[me.spare.part]?.name}
+            </span>
+          )}
         </div>
         {ui.hint && me.finishTick < 0 && (
           <div className="waypoint">
@@ -700,6 +706,18 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             onUp={() => game.controls.setTouchArms(false)}
             secs={secs}
           />
+          {me.build.legs === LEGS_HOPPER && (
+            <AbilityButton
+              label="Leap"
+              hint={ui.touch ? 'hold' : 'hold L'}
+              on
+              cd={me.hopCooldown}
+              active={me.hopCharge > 0 || me.airborne}
+              onDown={() => game.controls.setTouchLegs(true)}
+              onUp={() => game.controls.setTouchLegs(false)}
+              secs={secs}
+            />
+          )}
           <SlimeButton
             hint={ui.touch ? 'swipe' : 'K / I'}
             on={me.build.head === HEAD_SLIME}

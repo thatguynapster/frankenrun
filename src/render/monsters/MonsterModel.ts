@@ -25,6 +25,9 @@ export interface MonsterPose {
   readonly speed: number;
   readonly swingPole: number;
   readonly trailing: boolean;
+  /** Hopper Haunches: 0..1 of a full charge, and whether it is mid-leap. */
+  readonly hopCharge?: number;
+  readonly airborne?: boolean;
 }
 
 export type PartSlot = 'legs' | 'arms' | 'head';
@@ -294,11 +297,13 @@ export class MonsterModel {
 
     this.squash = Math.max(0, this.squash - dt * 4.5);
     this.snap = Math.max(0, this.snap - dt * 3);
-    const motion: Motion = { phase: this.phase, amp, speed01, time, swinging: p.swingPole >= 0, snap: this.snap, trailing: p.trailing };
+    const motion: Motion = { phase: this.phase, amp, speed01, time, swinging: p.swingPole >= 0, snap: this.snap, trailing: p.trailing, charge: p.hopCharge ?? 0, airborne: p.airborne ?? false };
 
     // posture: hips ride at the leg length with a bounce each step, the torso leans into the run
     const bounce = Math.abs(Math.sin(this.phase)) * 0.07 * amp;
-    this.hips.position.y = -1 + this.legDef.hipHeight * this.body.scale * SIZE + bounce * SIZE + this.lift;
+    // Hopper Haunches crouch while charging: the hips sink as the knees bend.
+    const crouch = (p.hopCharge ?? 0) * 0.3 * this.legDef.hipHeight * this.body.scale * SIZE;
+    this.hips.position.y = -1 + this.legDef.hipHeight * this.body.scale * SIZE + bounce * SIZE + this.lift - crouch;
     const lean = 0.06 + 0.22 * speed01;
     this.torso.rotation.set(lean, Math.sin(this.phase) * 0.12 * amp, Math.sin(this.phase) * 0.04 * amp);
     const breathe = 1 + Math.sin(time * 2.2) * 0.015 * (1 - amp);
@@ -341,7 +346,7 @@ export function createPartProp(slot: PartSlot, id: number, bodyId: number): THRE
   const body = BODY_DEFS[clampIndex(bodyId, BODY_DEFS.length)]!;
   const def = slot === 'legs' ? LEG_DEFS[clampIndex(id, LEG_DEFS.length)]! : slot === 'arms' ? ARM_DEFS[clampIndex(id, ARM_DEFS.length)]! : HEAD_DEFS[clampIndex(id, HEAD_DEFS.length)]!;
   const rig = def.create(body);
-  rig.animate({ phase: 0, amp: 0, speed01: 0, time: 0, swinging: false, snap: 0, trailing: false });
+  rig.animate({ phase: 0, amp: 0, speed01: 0, time: 0, swinging: false, snap: 0, trailing: false, charge: 0, airborne: false });
   const prop = new THREE.Group();
   prop.add(rig.root);
   if (slot === 'arms') rig.root.position.set(0, -body.shoulderY, 0); // arms hang from the shoulder: centre them on the prop
