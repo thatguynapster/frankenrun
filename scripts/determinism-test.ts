@@ -43,7 +43,7 @@ const drive = (random: { nextInt: (min: number, max: number) => number }, slot: 
 
 for (const [mode, inputFuzz, frames] of [['random', fuzz, 900], ['drive', drive, 1500]] as const) {
 for (const map of (process.env['MAPS'] ?? 'greybox,route1').split(',')) {
-  const config = makeSessionConfig(map);
+  const config = makeSessionConfig(map, Number(process.env['BOTS'] ?? 0));
   const result = assertDeterministic({
     runtimeFactory: () => createGameRuntime(undefined, config.bytes),
     policy: { playerCount: MAX_PLAYERS, defaultInput: DEFAULT_INPUT, snapshotBufferSize: 256, checksumIntervalFrames: 30 },

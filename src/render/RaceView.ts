@@ -677,7 +677,7 @@ export class RaceView {
   /** The lobby: monsters stand on the stage, the local player in front; names float over them. */
   private renderLobby(frame: GameProjection, localSlot: number, dt: number): void {
     const time = frame.frame / 30;
-    const standing = frame.players.filter((p) => p.joined && !p.bot);
+    const standing = frame.players.filter((p) => p.joined);
     const ordered = [...standing.filter((p) => p.slot === localSlot), ...standing.filter((p) => p.slot !== localSlot)];
     const spots: { spot: ReturnType<typeof stageSpot>; ready: boolean }[] = [];
     this.lobbyLabelList = [];

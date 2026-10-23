@@ -74,6 +74,7 @@ import {
   TICK_RATE,
   type LegsDef,
 } from './parts.js';
+import { BOT_RESCUE_TICKS, botInput, rescuePose } from './bot.js';
 import type { PreparedMap } from './world.js';
 
 export type Phase = 'BUILD' | 'COUNTDOWN' | 'RACING' | 'RESULTS';
@@ -138,6 +139,23 @@ export interface Swing {
   readonly ticksLeft: number;
 }
 
+/** What an AI racer remembers from tick to tick (see bot.ts). */
+export interface Brain {
+  /** How far along the route's centre line it has got (index of a route point). */
+  readonly index: number;
+  /** Ticks it has been nearly stationary while it should be moving. */
+  readonly stuck: number;
+  /** Ticks without getting any further along the route. */
+  readonly idle: number;
+  /** Ticks left of a get-unstuck manoeuvre. */
+  readonly recover: number;
+  /** Ticks left of holding Reset (a reset needs the button held for a while). */
+  readonly resetFor: number;
+  /** Which way it pivots when wedged (+1 or -1). */
+  readonly dir: number;
+}
+export const NEW_BRAIN: Brain = { index: 0, stuck: 0, idle: 0, recover: 0, resetFor: 0, dir: 1 };
+
 /** A Crab Claws grab in progress, on the grabber's side. */
 export interface Grab {
   readonly target: number;
@@ -162,6 +180,8 @@ export interface PlayerState {
   readonly swing: Swing | null;
   /** Crab Claws: the rival this monster is holding. */
   readonly grab: Grab | null;
+  /** AI racers only: what the bot remembers. */
+  readonly brain: Brain;
   /** Slot of the monster holding this one, or -1. */
   readonly grabbedBy: number;
   /** The monster this one last held, and until when the two are shielded from hurting each other. */
@@ -321,7 +341,7 @@ const CAR_LAYER = 2;
 const ANCHOR_ATTACH_HEIGHT = 2.6;
 const ALL = 0xffffffff;
 
-const carId = (slot: number): string => `car-${slot}`;
+export const carId = (slot: number): string => `car-${slot}`;
 const ropeId = (slot: number): string => `rope-${slot}`;
 
 const PIVOT_SPEED_SIGN = -1;
@@ -443,6 +463,7 @@ function newPlayer(slot: number): PlayerState {
     spinLeft: 0,
     swing: null,
     grab: null,
+    brain: NEW_BRAIN,
     grabbedBy: -1,
     lastGrab: null,
     struggle: 0,
@@ -531,7 +552,7 @@ const grabId = (slot: number): string => `grab-${slot}`;
  * What a claw can reach from where a monster stands: the nearest rival ahead (within range and a forward cone), else the
  * nearest loose part it has room for, else nothing. Later an aim direction from the reticle can replace "the nose".
  */
-function findGrabTarget(
+export function findGrabTarget(
   world: DeterministicPhysicsWorld3D,
   state: GameState,
   frame: number,
@@ -621,7 +642,7 @@ function syncBuildings(
 }
 
 /** Deterministic hash used for part-loss choices: depends only on the session seed, the tick and the monster. */
-function hash32(a: number, b: number, c: number): number {
+export function hash32(a: number, b: number, c: number): number {
   let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35);
   h ^= h >>> 13;
   h = Math.imul(h ^ c, 0x27d4eb2f);
@@ -695,10 +716,17 @@ function beginRace(s: GameState, frame: number, prep: PreparedMap, participants:
 
 export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
   const frame = state.frame + 1;
-  const inputs = state.players.map((p) => normaliseInput(rawInputs[p.slot]));
   const humans = state.players.length - state.bots;
+  // AI racers (the last `bots` slots) are driven by the simulation itself, from the state, so every client agrees on them.
+  const brains = new Map<number, Brain>();
+  const inputs = state.players.map((p) => {
+    if (p.slot < humans) return normaliseInput(rawInputs[p.slot]);
+    const bot = botInput(state, prep, p.slot, frame);
+    brains.set(p.slot, bot.brain);
+    return normaliseInput(bot.input);
+  });
   // Presence: a connected client announces itself every tick; an empty slot sends the neutral input.
-  const seen = state.players.map((p, i) => (i < humans && inputs[i]!.present ? { ...p, lastSeen: frame } : p));
+  const seen = state.players.map((p, i) => (i < humans ? (inputs[i]!.present ? { ...p, lastSeen: frame } : p) : { ...p, brain: brains.get(p.slot) ?? p.brain }));
   const here = (p: PlayerState): boolean => isHere(p, frame, humans);
   const hostSlot = hostSlotOf(seen, frame, humans);
   const startPressed = hostSlot >= 0 && inputs[hostSlot]!.start;
@@ -879,6 +907,17 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         });
       }
 
+      // --- a bot that is lost is put back on the route a little further on ---
+      let botBrain = p.brain;
+      if (racing && p.slot >= humans && p.brain.idle > BOT_RESCUE_TICKS && frame >= p.frozenUntil && p.finishTick < 0) {
+        const pose = rescuePose(prep, p.brain.index);
+        if (pose !== undefined) {
+          respawns.push(chassisBody(p.slot, p.build, pose.x, pose.z, pose.yaw));
+          p = { ...p, frozenUntil: frame + 30 };
+          botBrain = { ...p.brain, index: p.brain.index + 12, idle: 0, stuck: 0, recover: 0 };
+        }
+      }
+
       // --- reset ---
       let resetHold = p.resetHold;
       let frozenUntil = p.frozenUntil;
@@ -961,6 +1000,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         spinLeft,
         swing,
         grab,
+        brain: botBrain,
         grabbedBy,
         lastGrab,
         struggle,

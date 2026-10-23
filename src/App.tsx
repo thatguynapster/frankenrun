@@ -297,10 +297,14 @@ function keysHelp(ui: UiState): string {
   return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
+const BOT_NAMES = ['Ghoul', 'Wraith', 'Zombie', 'Mummy', 'Banshee', 'Vampire', 'Gremlin', 'Specter', 'Goblin', 'Ghost'];
+/** The name an AI racer races under. */
+const botName = (slot: number): string => `${BOT_NAMES[slot % BOT_NAMES.length]} (bot)`;
+
 function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission'] }) {
   const me = frame.players[meSlot];
-  const nameOf = (slot: number): string => names[slot] ?? `Player ${slot + 1}`;
-  const racers = frame.players.filter((p) => p.inRace && !p.bot);
+  const nameOf = (slot: number): string => names[slot] ?? (frame.players[slot]?.bot ? botName(slot) : `Player ${slot + 1}`);
+  const racers = frame.players.filter((p) => p.inRace); // AI racers count: they are part of the race
   return (
     <div className="panel center results">
       <h2 className="title small">{mode === 'finished' ? 'Race complete!' : 'Results'}</h2>
@@ -372,7 +376,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   const stats = buildStats(ui.build);
   const secs = (t: number) => (t / TICK).toFixed(1);
   const raceOn = frame.phase === 'COUNTDOWN' || frame.phase === 'RACING';
-  const nameOf = (slot: number): string => ui.names[slot] ?? `Player ${slot + 1}`;
+  const nameOf = (slot: number): string => ui.names[slot] ?? (frame.players[slot]?.bot ? botName(slot) : `Player ${slot + 1}`);
 
   // The lobby is the build screen: everyone sees it before the first race, and after a race each player gets here by
   // pressing Rematch (the others keep their results until they do the same).
@@ -511,7 +515,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
     );
   }
 
-  const racers = frame.players.filter((p) => p.inRace && !p.bot);
+  const racers = frame.players.filter((p) => p.inRace); // AI racers count: they are part of the race
   const position =
     [...racers]
       .sort((a, b) => (b.finishTick >= 0 ? 1 : 0) - (a.finishTick >= 0 ? 1 : 0) || b.nextCheckpoint - a.nextCheckpoint)

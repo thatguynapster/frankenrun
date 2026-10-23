@@ -63,13 +63,16 @@ export function createRunner(): FrankenRunner {
   });
 }
 
-/** Offline practice: a real rollback session with an idle bot that readies up immediately. */
+/** Practice races: you against AI racers (the simulation drives them; see sim/bot.ts). */
+export const PRACTICE_BOTS = Math.min(MAX_PLAYERS - 1, 5);
+
+/** Offline practice: a real rollback session with one human and a pack of AI racers. */
 export async function startPractice(runner: FrankenRunner, map: string = DEFAULT_MAP): Promise<void> {
   await runner.start({
     mode: 'offline',
     identity: runtimeIdentity,
-    sessionConfigBytes: makeSessionConfig(map, 1, 2).bytes, // one human and one idle bot
-    playerCount: 2,
+    sessionConfigBytes: makeSessionConfig(map, PRACTICE_BOTS, PRACTICE_BOTS + 1).bytes,
+    playerCount: PRACTICE_BOTS + 1,
     localSlot: 0,
     botInputForTick: () => ({ ...DEFAULT_INPUT, present: true, ready: true }),
   });

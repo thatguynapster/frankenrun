@@ -868,7 +868,7 @@ export class Game {
     const me = results?.players[this.snapshot?.localSlot ?? 0];
     if (results === undefined || me === undefined || me.finishTick < 0) return;
     const place = results.finishOrder.indexOf(me.slot) + 1;
-    const racers = results.players.filter((p) => p.inRace && !p.bot).length;
+    const racers = results.players.filter((p) => p.inRace).length;
     const out = await shareResult({ place, racers, seconds: (me.finishTick - results.raceStart) / TICK_RATE, partsLost: me.partsLost, partsStolen: me.partsStolen });
     this.note(out.ok ? 'Result link ready: send it to a friend' : `Could not create the link: ${out.error}`);
   }
