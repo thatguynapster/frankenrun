@@ -34,6 +34,7 @@ function App() {
       gameRef.current = game;
       if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = game; // dev-only test hook
       game.subscribe(setUi);
+      for (const type of ['pointerdown', 'keydown']) window.addEventListener(type, () => game.noteActivity(), { passive: true });
       applySafeArea();
     }
   }, []);
@@ -117,24 +118,13 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
     return (
       <div className="panel center routes">
         <h1 className="title small">{ui.picking === 'host' ? 'Pick the route for your race' : 'Pick a route to practise'}</h1>
-        <div className="route-carousel">
-          <button className="carousel-arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
-            ‹
-          </button>
-          <div className="route-list">
-            {ROUTES.slice(ui.routeOffset, ui.routeOffset + 3).map((r) => (
-              <button key={r.id} className="route" onClick={() => void game.startOn(r.id)}>
-                <img src={`route-previews/${r.id}.svg`} alt={`Map of ${r.name}`} draggable={false} />
-                <b>{r.name}</b>
-                <span className="km">{r.km.toFixed(1)} km</span>
-                <small>{r.blurb}</small>
-              </button>
-            ))}
+        {ui.picking === 'practice' && (
+          <div className="bot-skill">
+            <small className="muted">Bots</small>
+            <BotLevelChips ui={ui} game={game} />
           </div>
-          <button className="carousel-arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
-            ›
-          </button>
-        </div>
+        )}
+        <RouteCarousel ui={ui} game={game} onPick={(id) => void game.startOn(id)} />
         <button className="btn" onClick={() => game.cancelRoutePick()}>
           Back
         </button>
@@ -146,6 +136,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       <div className="panel center">
         <h1 className="title">FRANKENRUN</h1>
         <p className="muted">Stitch a monster. Race it. Steal the win.</p>
+        {ui.titleNote && <p className="muted small note">{ui.titleNote}</p>}
         <button className="btn primary" onClick={() => void game.quick()}>
           Quick match
           <small className="sub">Today: {routeInfo(ui.featuredRoute)?.name}</small>
@@ -207,6 +198,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
   return (
     <>
       <PlayOverlay game={game} ui={ui} />
+      <RoomNotices game={game} ui={ui} />
       {ui.menuOpen && <MenuPanel game={game} ui={ui} />}
     </>
   );
@@ -298,6 +290,46 @@ function keysHelp(ui: UiState): string {
   return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
+
+const BOT_LEVELS = ['Easy', 'Normal', 'Hard'] as const;
+
+/** Skill choice for AI racers. */
+function BotLevelChips({ ui, game }: { ui: UiState; game: Game }) {
+  return (
+    <div className="chips">
+      {BOT_LEVELS.map((name, i) => (
+        <button key={name} className={`chip ${ui.botLevel === i ? 'on' : ''}`} onClick={() => game.setBotLevel(i)}>
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Three routes at a time with arrows and a map preview of each. */
+function RouteCarousel({ ui, game, onPick }: { ui: UiState; game: Game; onPick: (routeId: string) => void }) {
+  return (
+        <div className="route-carousel">
+          <button className="carousel-arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
+            ‹
+          </button>
+          <div className="route-list">
+            {ROUTES.slice(ui.routeOffset, ui.routeOffset + 3).map((r) => (
+              <button key={r.id} className="route" onClick={() => onPick(r.id)}>
+                <img src={`route-previews/${r.id}.svg`} alt={`Map of ${r.name}`} draggable={false} />
+                <b>{r.name}</b>
+                <span className="km">{r.km.toFixed(1)} km</span>
+                <small>{r.blurb}</small>
+              </button>
+            ))}
+          </div>
+          <button className="carousel-arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
+            ›
+          </button>
+        </div>
+  );
+}
+
 const BOT_NAMES = ['Ghoul', 'Wraith', 'Zombie', 'Mummy', 'Banshee', 'Vampire', 'Gremlin', 'Specter', 'Goblin', 'Ghost'];
 /** The name an AI racer races under. */
 const botName = (slot: number): string => `${BOT_NAMES[slot % BOT_NAMES.length]} (bot)`;
@@ -362,6 +394,46 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub
   );
 }
 
+/** Notices over the room: bots about to fill the lobby, an unattended lobby about to close, the route picker. */
+function RoomNotices({ game, ui }: { game: Game; ui: UiState }) {
+  return (
+    <>
+      {ui.botNotice !== null && (
+        <div className="notice">
+          <b>No one has joined yet</b>
+          <span>The lobby will be filled with bots in {ui.botNotice.secondsLeft} s.</span>
+          <div className="row">
+            <button className="btn primary" onClick={() => game.optOutOfBots()}>
+              Wait for players
+            </button>
+            <button className="btn" onClick={() => game.fillBotsNow()}>
+              Add bots now
+            </button>
+          </div>
+        </div>
+      )}
+      {ui.afkNotice !== null && (
+        <div className="notice">
+          <b>Still there?</b>
+          <span>This lobby will close in {ui.afkNotice.secondsLeft} s because nobody has used it for a while.</span>
+          <button className="btn primary" onClick={() => game.noteActivity()}>
+            I'm here
+          </button>
+        </div>
+      )}
+      {ui.changingRoute && (
+        <div className="panel center routes over">
+          <h1 className="title small">Pick the next route</h1>
+          <RouteCarousel ui={ui} game={game} onPick={(id) => void game.changeRoute(id)} />
+          <button className="btn" onClick={() => game.closeRouteChange()}>
+            Back
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   const dragX = useRef<number | null>(null); // the pointer position while the lobby monster is being turned
   const frame = ui.frame;
@@ -423,6 +495,10 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         />
         <div className="lobby-names">
           {ui.labels.map((l) => {
+            // a name tag that would end up under the pick panel is left out (the panel is always in front)
+            const w = window.innerWidth, h = window.innerHeight;
+            const landscape = w / h > 1.2;
+            if (landscape ? l.x > 1 - Math.min(440, 0.46 * w) / w - 0.08 : l.y > 0.4) return null;
             const p = frame.players[l.slot];
             const inLobby = frame.phase === 'BUILD' || p?.rematch === true;
             return (
@@ -439,7 +515,16 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           <div className="lobby-head">
             <div>
               <h2 className="title small">Stitch your monster</h2>
-              {frame.mapId && <p className="muted small">Route: {routeInfo(frame.mapId)?.name ?? frame.mapId}</p>}
+              {frame.mapId && (
+                <p className="muted small">
+                  Route: {routeInfo(frame.mapId)?.name ?? frame.mapId}
+                  {isHost && ui.roomCode && (
+                    <button className="chip share" onClick={() => game.openRouteChange()}>
+                      Change route
+                    </button>
+                  )}
+                </p>
+              )}
             </div>
             {ui.roomCode && (
               <p className="room">
@@ -495,6 +580,22 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             <StatBar label="Grip" value={stats.grip} max={1.8} />
             <StatBar label="Durability" value={stats.hits} max={3} text={`${stats.hits} ${stats.hits === 1 ? 'hit' : 'hits'}`} />
           </div>
+          {isHost && ui.roomCode && (
+            <div className="bot-controls">
+              <small className="muted">Bots</small>
+              <BotLevelChips ui={ui} game={game} />
+              {frame.players.some((p) => p.bot) ? (
+                <button className="chip" onClick={() => game.removeBotsNow()}>
+                  Remove bots
+                </button>
+              ) : (
+                <button className="chip" onClick={() => game.fillBotsNow()}>
+                  Add bots
+                </button>
+              )}
+            </div>
+          )}
+          {ui.roomNote && <p className="muted small">{ui.roomNote}</p>}
           <p className="muted small">{lobbyHint}</p>
           <div className="row">
             {isHost ? (

@@ -1260,3 +1260,60 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.4);
   vertical-align: middle;
 }
+
+/* Name tags never show where the pick panel is (the panel keeps its original, see-through look). */
+.panel.lobby > .lobby-side {
+  z-index: 2;
+}
+
+.panel.lobby > .lobby-names {
+  z-index: 0;
+  clip-path: inset(0 calc(min(440px, 46%) + 24px) 0 0);
+}
+
+@media (max-aspect-ratio: 6/5) {
+  .panel.lobby > .lobby-names {
+    clip-path: inset(0 0 calc(58% + 12px) 0);
+  }
+}
+
+.notice {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  max-width: min(420px, 88%);
+  text-align: center;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #fff;
+  pointer-events: auto;
+}
+
+.bot-controls,
+.bot-skill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.bot-controls .chip,
+.bot-skill .chip {
+  min-height: 34px;
+  padding: 4px 10px;
+}
+
+/* The in-room route picker sits above everything in the lobby, including the pick panel and name tags. */
+.panel.routes.over {
+  z-index: 40;
+  background: rgba(8, 10, 22, 0.94);
+}

@@ -67,11 +67,11 @@ export function createRunner(): FrankenRunner {
 export const PRACTICE_BOTS = Math.min(MAX_PLAYERS - 1, 5);
 
 /** Offline practice: a real rollback session with one human and a pack of AI racers. */
-export async function startPractice(runner: FrankenRunner, map: string = DEFAULT_MAP): Promise<void> {
+export async function startPractice(runner: FrankenRunner, map: string = DEFAULT_MAP, botLevel = 1): Promise<void> {
   await runner.start({
     mode: 'offline',
     identity: runtimeIdentity,
-    sessionConfigBytes: makeSessionConfig(map, PRACTICE_BOTS, PRACTICE_BOTS + 1).bytes,
+    sessionConfigBytes: makeSessionConfig(map, PRACTICE_BOTS, PRACTICE_BOTS + 1, botLevel).bytes,
     playerCount: PRACTICE_BOTS + 1,
     localSlot: 0,
     botInputForTick: () => ({ ...DEFAULT_INPUT, present: true, ready: true }),

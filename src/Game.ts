@@ -4,6 +4,7 @@ import { Controls } from './input/Controls.js';
 import { ensureMap } from './net/mapLoader.js';
 import { SHOW_LEADERBOARD, loadBoard, submitTime, type Board, type BoardPeriod, type Submission } from './leaderboard.js';
 import { readInvite, shareResult, shareRoom, type Invite } from './share.js';
+import { makeSessionConfig } from './sim/runtime.js';
 import { createRunner, hostRace, joinRace, quickMatch, startPractice, type FrankenRunner } from './net/runner.js';
 import { RaceView } from './render/RaceView.js';
 import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
@@ -77,6 +78,18 @@ export interface UiState {
   /** Gametags by slot (own tag from the profile, others relayed through the room). */
   readonly names: Readonly<Record<number, string>>;
   readonly menuOpen: boolean;
+  /** The host's lobby is empty: bots will fill it unless the host opts out. Seconds until they arrive, or null. */
+  readonly botNotice: { readonly secondsLeft: number } | null;
+  /** The lobby has been idle for a long time: it will close unless the player is still there. Seconds left, or null. */
+  readonly afkNotice: { readonly secondsLeft: number } | null;
+  /** How good AI racers are (0 easy, 1 normal, 2 hard). */
+  readonly botLevel: number;
+  /** A one-line message for the title screen (why the lobby was closed). */
+  readonly titleNote: string;
+  /** The host is choosing a new route for the room. */
+  readonly changingRoute: boolean;
+  /** One-line feedback from the room (for example, why a route change was refused). */
+  readonly roomNote: string;
   /** This player's colour tint and hat. */
   readonly style: Style;
   /** Everyone's style by slot (received from the room; bots have their own). */
@@ -180,6 +193,18 @@ export class Game {
   private build: Build = DEFAULT_BUILD;
   private ready = false;
   private wantRematch = false;
+  /** How this room came about: it decides whether bots fill an empty lobby by themselves (only quick match does). */
+  private roomKind: 'practice' | 'quick' | 'private' | 'joined' = 'practice';
+  private aloneSince = 0;
+  private botOptOut = false;
+  private fillUntil = 0;
+  private removeUntil = 0;
+  private botLevel = 1;
+  private lastActivity = 0;
+  private afkSince = 0;
+  private titleNote = '';
+  private changingRoute = false;
+  private roomNote = '';
   private startUntil = 0;
   private menuOpen = false;
   readonly audio = new AudioEngine();
@@ -534,6 +559,12 @@ export class Game {
       labels: this.view.lobbyLabels(),
       icons: this.view.icons() ?? {},
       lobbyTab: this.lobbyTab,
+      botNotice: this.botNoticeNow(),
+      afkNotice: this.afkNoticeNow(),
+      botLevel: this.botLevel,
+      titleNote: this.titleNote,
+      changingRoute: this.changingRoute,
+      roomNote: this.roomNote,
       style: this.style,
       styles: this.styleTable(),
       picking: this.picking,
@@ -744,6 +775,9 @@ export class Game {
         headSel: this.build.head,
         ready: this.ready,
         rematch: this.wantRematch,
+        fillBots: performance.now() < this.fillUntil,
+        removeBots: performance.now() < this.removeUntil,
+        botLevel: this.botLevel,
       };
       // With the menu open the monster gets neutral input; an offline race pauses, an online one keeps running.
       const input = this.menuOpen ? base : this.controls.read(base);
@@ -763,6 +797,7 @@ export class Game {
     this.view.setAim(this.screen === 'play' && !this.menuOpen && this.aimScreen !== null ? this.view.groundPoint(this.aimScreen.x, this.aimScreen.y) : null);
     const r0 = performance.now();
     const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
+    this.watchLobby(now);
     this.view.setStyles(this.styleTable());
     this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
     this.perfRender += performance.now() - r0;
@@ -855,7 +890,16 @@ export class Game {
   }
 
   /** Loads the routes a session may need (all of them when joining, since the room decides the route). */
-  private async enter(start: () => Promise<void>, maps: readonly string[] = ROUTES.map((r) => r.id)): Promise<void> {
+  private async enter(start: () => Promise<void>, maps: readonly string[] = ROUTES.map((r) => r.id), kind: Game['roomKind'] = 'practice'): Promise<void> {
+    this.roomKind = kind;
+    this.aloneSince = 0;
+    this.botOptOut = false;
+    this.fillUntil = 0;
+    this.changingRoute = false;
+    this.roomNote = '';
+    this.titleNote = '';
+    this.lastActivity = performance.now();
+    this.afkSince = 0;
     this.screen = 'connecting';
     this.error = '';
     this.ready = false;
@@ -983,20 +1027,20 @@ export class Game {
     return this.practice(routeId);
   }
   practice(map: string = ROUTES[0]!.id): Promise<void> {
-    return this.enter(() => startPractice(this.runner, map), [map]);
+    return this.enter(() => startPractice(this.runner, map, this.botLevel), [map], 'practice');
   }
   /** Public matchmaking: everyone is pooled on the route of the day. */
   quick(): Promise<void> {
     const map = featuredRoute().id;
-    return this.enter(() => quickMatch(this.runner, map), [map]);
+    return this.enter(() => quickMatch(this.runner, map), [map], 'quick');
   }
   host(map: string = ROUTES[0]!.id): Promise<void> {
     return this.enter(async () => {
       await hostRace(this.runner, map);
-    }, [map]);
+    }, [map], 'private');
   }
   join(code: string): Promise<void> {
-    return this.enter(() => joinRace(this.runner, code.trim().toUpperCase()));
+    return this.enter(() => joinRace(this.runner, code.trim().toUpperCase()), undefined, 'joined');
   }
   /**
    * Re-enters the room we were dropped from. The seat is reclaimed and the match history is replayed. The
@@ -1043,7 +1087,11 @@ export class Game {
     }
   }
 
-  leave(): void {
+  leave(note = ''): void {
+    this.titleNote = note;
+    this.changingRoute = false;
+    this.afkSince = 0;
+    this.aloneSince = 0;
     this.lastRoom = '';
     this.lastResults = undefined;
     this.audioEvents.reset();
@@ -1096,6 +1144,136 @@ export class Game {
   }
 
   /** Results screen (or a race you are not in): go to the lobby for the next race. Only this player moves. */
+  // ---------- AI racers in an online room ----------
+
+  /** Seconds a quick-match host waits alone before the notice appears, and how long the notice counts down. */
+  static readonly BOT_WAIT_MS = 20000;
+  static readonly BOT_COUNTDOWN_MS = 10000;
+  /** An unattended lobby is closed after this long without a touch or a key, with a warning countdown at the end. */
+  static readonly AFK_MS = 5 * 60 * 1000;
+  static readonly AFK_WARNING_MS = 30 * 1000;
+
+  private lobbyNow(): { frame: GameProjection; me: GameProjection['players'][number] } | undefined {
+    const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    const me = frame?.players[this.snapshot?.localSlot ?? 0];
+    if (frame === undefined || me === undefined || this.screen !== 'play') return undefined;
+    return frame.phase === 'BUILD' || me.rematch ? { frame, me } : undefined;
+  }
+
+  /** Seconds until the empty lobby fills with bots (host of a quick-match room only), or null. */
+  private botNoticeNow(): { secondsLeft: number } | null {
+    if (this.aloneSince === 0 || this.botOptOut) return null;
+    const elapsed = performance.now() - this.aloneSince;
+    if (elapsed < Game.BOT_WAIT_MS) return null;
+    return { secondsLeft: Math.max(0, Math.ceil((Game.BOT_WAIT_MS + Game.BOT_COUNTDOWN_MS - elapsed) / 1000)) };
+  }
+
+  private afkNoticeNow(): { secondsLeft: number } | null {
+    if (this.afkSince === 0) return null;
+    return { secondsLeft: Math.max(0, Math.ceil((Game.AFK_WARNING_MS - (performance.now() - this.afkSince)) / 1000)) };
+  }
+
+  /** Called every frame: waits for company, fills with bots, and closes a lobby nobody is using. */
+  private watchLobby(now: number): void {
+    const lobby = this.lobbyNow();
+    if (lobby === undefined) {
+      this.aloneSince = 0;
+      this.afkSince = 0;
+      return;
+    }
+    const { frame, me } = lobby;
+    // Waiting alone in a quick-match lobby: after a while the host is told bots will join, with a countdown and a way out.
+    const people = frame.players.filter((p) => p.joined && !p.bot).length;
+    const bots = frame.players.filter((p) => p.bot).length;
+    const hostOfQuick = this.roomKind === 'quick' && me.host && this.lastRoom !== '' && frame.phase === 'BUILD';
+    if (hostOfQuick && people === 1 && bots === 0 && !this.botOptOut) {
+      if (this.aloneSince === 0) this.aloneSince = now;
+      if (now - this.aloneSince >= Game.BOT_WAIT_MS + Game.BOT_COUNTDOWN_MS) {
+        this.aloneSince = 0;
+        this.botOptOut = true; // done: do not ask again
+        this.fillBotsNow();
+      }
+    } else {
+      this.aloneSince = 0;
+    }
+    // Nobody has touched anything for a long time: warn, then close the lobby.
+    const idle = now - this.lastActivity;
+    if (idle >= Game.AFK_MS) {
+      if (this.afkSince === 0) this.afkSince = now;
+      if (now - this.afkSince >= Game.AFK_WARNING_MS) this.leave('The lobby was closed because nobody was using it.');
+    } else {
+      this.afkSince = 0;
+    }
+  }
+
+  /** Any touch, click or key counts as being there. */
+  noteActivity(): void {
+    this.lastActivity = performance.now();
+    if (this.afkSince !== 0) {
+      this.afkSince = 0;
+      this.emit();
+    }
+  }
+
+  /** The host fills every empty seat with an AI racer, now. */
+  fillBotsNow(): void {
+    this.fillUntil = performance.now() + 400;
+    this.aloneSince = 0;
+    this.emit();
+  }
+
+  /** The host sends the AI racers home again. */
+  removeBotsNow(): void {
+    this.removeUntil = performance.now() + 400;
+    this.botOptOut = true;
+    this.emit();
+  }
+
+  /** "Wait for players": no bots unless the host asks for them. */
+  optOutOfBots(): void {
+    this.botOptOut = true;
+    this.aloneSince = 0;
+    this.emit();
+  }
+
+  setBotLevel(level: number): void {
+    this.botLevel = Math.max(0, Math.min(2, Math.round(level)));
+    this.emit();
+  }
+
+  // ---------- changing the route of a room ----------
+
+  openRouteChange(): void {
+    this.changingRoute = true;
+    this.roomNote = '';
+    this.emit();
+  }
+  closeRouteChange(): void {
+    this.changingRoute = false;
+    this.emit();
+  }
+  /** The host swaps the room onto another route (the room restarts at the build screen on the new map). */
+  async changeRoute(routeId: string): Promise<void> {
+    const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    this.changingRoute = false;
+    if (frame === undefined) return;
+    if (frame.phase === 'RESULTS' && frame.players.some((p) => p.joined && !p.bot && !p.rematch)) {
+      this.roomNote = 'Some players are still looking at the results. Change the route when everyone is back in the lobby.';
+      this.emit();
+      return;
+    }
+    try {
+      await Promise.all(ROUTES.map((r) => ensureMap(r.id)));
+      const session = makeSessionConfig(routeId);
+      this.runner.requestReconfigure(session.bytes, session.digest);
+      this.roomNote = '';
+    } catch (e) {
+      this.roomNote = 'Could not change the route right now.';
+      console.warn('[net] route change failed:', e);
+    }
+    this.emit();
+  }
+
   rematch(): void {
     this.wantRematch = true;
     this.ready = false;

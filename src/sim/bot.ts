@@ -4,8 +4,8 @@
 // parts: Crab Claws on a rival ahead, Slime Gland on a rival behind.
 
 import { deterministicPhysicsBodyById3D } from '@series-inc/rundot-syncplay/creator';
-import { ARM_CLAWS, DEFAULT_INPUT, HEAD_SLIME, NEW_BRAIN, carId, findGrabTarget, hash32, type Brain, type GameInput, type GameState } from './game.js';
-import { TIP_TICKS } from './parts.js';
+import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_INPUT, HEAD_SLIME, NEW_BRAIN, carId, findGrabTarget, hash32, nearestAnchor, type Brain, type GameInput, type GameState } from './game.js';
+import { ARMS, TIP_TICKS } from './parts.js';
 import type { PreparedMap } from './world.js';
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
@@ -54,7 +54,12 @@ export function botInput(state: GameState, prep: PreparedMap, slot: number, fram
   }
 
   // each bot has its own pace, so a pack spreads out instead of travelling as one
-  const pace = 0.84 + 0.16 * (hash32(state.seed, slot, 99) / 4294967296);
+  // skill: an easy bot is slow and uses its parts rarely; a hard one drives flat out and uses them whenever it can
+  const level = Math.max(0, Math.min(2, state.botLevel));
+  const luck = hash32(state.seed, slot, 99) / 4294967296;
+  const pace = level === 0 ? 0.62 + 0.18 * luck : level === 1 ? 0.84 + 0.16 * luck : 0.97 + 0.1 * luck;
+  const eager = level === 0 ? 0.35 : level === 1 ? 0.75 : 1;
+  const willing = hash32(state.seed + frame, slot, 7) / 4294967296 < eager;
   const lookAhead = n === 0 ? 0 : Math.round(clamp(3 + speed * 0.22, 4, 12));
   let target = point(n === 0 ? 0 : Math.min(n - 1, index + lookAhead));
   const cp = prep.checkpoints[player.nextCheckpoint];
@@ -110,8 +115,19 @@ export function botInput(state: GameState, prep: PreparedMap, slot: number, fram
 
   // parts
   let arms = false, head = false, slimeFwd = false;
-  if (player.build.arms === ARM_CLAWS && player.armsCooldown === 0 && frame % 12 === slot % 12 && findGrabTarget(state.physics, state, frame, player, body).kind === 'rival') arms = true;
-  if (player.build.head === HEAD_SLIME && player.headCooldown === 0 && frame % 15 === (slot * 4) % 15) {
+  if (player.build.arms === ARM_CLAWS && player.armsCooldown === 0 && frame % 12 === slot % 12 && willing && findGrabTarget(state.physics, state, frame, player, body).kind === 'rival') arms = true;
+  if (player.build.arms === ARM_TENTACLES) {
+    if (player.swing !== null) {
+      // swinging round a pole: hold on while the monster is still being turned toward where the route goes, then let go
+      const swung = ARMS.tentacles.swingTicks - player.swing.ticksLeft;
+      arms = Math.abs(err) > 0.4 && swung < 70;
+    } else if (player.armsCooldown === 0 && bend > 0.7 && speed > 7 && willing && frame % 6 === slot % 6) {
+      // a sharp bend coming up and a pole in reach: swing round it
+      const pole = nearestAnchor(prep, body.x, body.z, ARMS.tentacles.grabRange * 0.9);
+      if (pole !== null) arms = true;
+    }
+  }
+  if (player.build.head === HEAD_SLIME && player.headCooldown === 0 && willing && frame % 15 === (slot * 4) % 15) {
     for (const other of state.players) {
       if (other.slot === slot || !other.inRace || other.finishTick >= 0) continue;
       const ob = deterministicPhysicsBodyById3D(state.physics, carId(other.slot));

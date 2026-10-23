@@ -33,8 +33,8 @@ export interface EncodedSessionConfig {
 }
 
 /** The session config is part of the room's identity: same map, same players, same tick rate. */
-export function makeSessionConfig(map: string, bots = 0, players = MAX_PLAYERS): EncodedSessionConfig {
-  const config: SessionConfig = Object.freeze({ game: 'frankenrun', map, players, bots, seed: 1, tickRateHz: 30, version: 1 });
+export function makeSessionConfig(map: string, bots = 0, players = MAX_PLAYERS, botLevel = 1): EncodedSessionConfig {
+  const config: SessionConfig = Object.freeze({ game: 'frankenrun', map, players, bots, botLevel, seed: 1, tickRateHz: 30, version: 1 });
   const bytes = new TextEncoder().encode(JSON.stringify(config));
   return { config, bytes, digest: kinetixSessionConfigDigest(bytes) };
 }
@@ -51,7 +51,8 @@ function parseSessionConfig(bytes: Uint8Array): SessionConfig {
     value.tickRateHz !== 30 ||
     value.version !== 1 ||
     typeof value.seed !== 'number' ||
-    (value.bots !== undefined && (!Number.isInteger(value.bots) || value.bots < 0 || value.bots >= value.players))
+    (value.bots !== undefined && (!Number.isInteger(value.bots) || value.bots < 0 || value.bots >= value.players)) ||
+    (value.botLevel !== undefined && (!Number.isInteger(value.botLevel) || value.botLevel < 0 || value.botLevel > 2))
   ) {
     throw new Error('FRANKENRUN_CONFIG_INVALID');
   }

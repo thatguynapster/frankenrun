@@ -6,7 +6,8 @@
       "config": {
         "maxPlayers": 4,
         "tickRateHz": 30,
-        "reconnectTimeout": 30
+        "reconnectTimeout": 30,
+        "reconfigurePolicy": "creator"
       }
     }
   ]

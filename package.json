@@ -31,6 +31,7 @@
     "test:slime": "node scripts/run-ts.mjs scripts/slime-test.ts",
     "test:claws": "node scripts/run-ts.mjs scripts/claw-test.ts",
     "test:bots": "node scripts/run-ts.mjs scripts/bot-test.ts",
+    "test:bots:online": "node scripts/run-ts.mjs scripts/bots-online-test.ts",
     "test:rejoin": "node scripts/run-ts.mjs scripts/rejoin-test.ts",
     "test:names": "node scripts/run-ts.mjs scripts/names-test.ts",
     "test:audio": "node scripts/run-ts.mjs scripts/audio-events-test.ts",

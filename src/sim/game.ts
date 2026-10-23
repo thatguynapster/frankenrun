@@ -87,6 +87,12 @@ export interface GameInput {
   readonly head: boolean;
   /** With `head`: throw the slime ahead of the monster instead of behind it. */
   readonly slimeFwd: boolean;
+  /** Host only, in the lobby: fill every empty seat with an AI racer (at the `botLevel` skill). */
+  readonly fillBots: boolean;
+  /** Host only, in the lobby: send the AI racers that were added this way home again. */
+  readonly removeBots: boolean;
+  /** Host only: how good the AI racers are, 0 easy, 1 normal, 2 hard. */
+  readonly botLevel: number;
   readonly legs: boolean;
   readonly reset: boolean;
   /** Right a monster that has fallen on its side (only does anything while it is tipped over). */
@@ -110,6 +116,9 @@ export const DEFAULT_INPUT: GameInput = {
   arms: false,
   head: false,
   slimeFwd: false,
+  fillBots: false,
+  removeBots: false,
+  botLevel: 1,
   legs: false,
   reset: false,
   getUp: false,
@@ -182,6 +191,8 @@ export interface PlayerState {
   readonly grab: Grab | null;
   /** AI racers only: what the bot remembers. */
   readonly brain: Brain;
+  /** This seat was filled with an AI racer by the host (the last `bots` seats are always AI racers on top of this). */
+  readonly isBot: boolean;
   /** Slot of the monster holding this one, or -1. */
   readonly grabbedBy: number;
   /** The monster this one last held, and until when the two are shielded from hurting each other. */
@@ -262,6 +273,8 @@ export interface GameState {
   readonly seed: number;
   /** Number of bot slots (the last ones). The race ends when every human has finished. */
   readonly bots: number;
+  /** How good the AI racers are: 0 easy, 1 normal, 2 hard. */
+  readonly botLevel: number;
   /** Frame the race started on (finish times are measured from here). */
   readonly raceStart: number;
   readonly finishOrder: readonly number[];
@@ -276,6 +289,8 @@ export interface SessionConfig {
   readonly players: number;
   /** Bot slots at the end of the roster (practice); 0 in a real room. */
   readonly bots?: number;
+  /** AI skill for the `bots` seats (0 easy, 1 normal, 2 hard). */
+  readonly botLevel?: number;
   readonly seed: number;
   readonly tickRateHz: number;
   readonly version: number;
@@ -464,6 +479,7 @@ function newPlayer(slot: number): PlayerState {
     swing: null,
     grab: null,
     brain: NEW_BRAIN,
+    isBot: false,
     grabbedBy: -1,
     lastGrab: null,
     struggle: 0,
@@ -501,6 +517,7 @@ export function createGameState(config: SessionConfig, prep: PreparedMap): GameS
     nextPickupId: 1,
     seed: config.seed,
     bots: config.bots ?? 0,
+    botLevel: config.botLevel ?? 1,
     raceStart: 0,
     finishOrder: [],
     activeCells: [],
@@ -593,7 +610,7 @@ function slickGripMul(slicks: readonly Slick[], x: number, z: number, slot: numb
   return 1;
 }
 
-function nearestAnchor(prep: PreparedMap, x: number, z: number, range: number): { index: number; distance: number } | null {
+export function nearestAnchor(prep: PreparedMap, x: number, z: number, range: number): { index: number; distance: number } | null {
   let best: { index: number; distance: number } | null = null;
   for (let i = 0; i < prep.anchors.length; i += 1) {
     const a = prep.anchors[i]!;
@@ -667,7 +684,7 @@ function restartState(state: GameState, frame: number, prep: PreparedMap): GameS
     phaseStart: frame,
     physics: createDeterministicPhysicsWorld3D(prep.staticBodies),
     // Everyone is back at the build screen; a player who had already readied up stays ready.
-    players: state.players.map((p) => ({ ...newPlayer(p.slot), build: p.build, ready: p.ready, lastSeen: p.lastSeen })),
+    players: state.players.map((p) => ({ ...newPlayer(p.slot), build: p.build, ready: p.ready, lastSeen: p.lastSeen, isBot: p.isBot })),
     slicks: [],
     blobs: [],
     pickups: [],
@@ -680,20 +697,23 @@ function restartState(state: GameState, frame: number, prep: PreparedMap): GameS
 
 const buildOf = (input: GameInput): Build => ({ body: input.bodySel, legs: input.legsSel, arms: input.armsSel, head: input.headSel });
 
+/** True for an AI racer: one of the last `bots` seats, or a seat the host filled. */
+const isBotSeat = (p: PlayerState, humans: number): boolean => p.isBot || p.slot >= humans;
+
 /** True while a player is in the room: bots always, humans while their client keeps announcing itself. */
 function isHere(p: PlayerState, frame: number, humans: number): boolean {
-  return p.slot >= humans || frame - p.lastSeen < PRESENCE_TIMEOUT_TICKS;
+  return isBotSeat(p, humans) || frame - p.lastSeen < PRESENCE_TIMEOUT_TICKS;
 }
 
 /** The host is the room's creator (slot 0, the first to join) while they are present, else the lowest present human. */
 function hostSlotOf(players: readonly PlayerState[], frame: number, humans: number): number {
-  for (const p of players) if (p.slot < humans && isHere(p, frame, humans)) return p.slot;
+  for (const p of players) if (!isBotSeat(p, humans) && isHere(p, frame, humans)) return p.slot;
   return -1;
 }
 
 /** The host may start once at least 2 players (bots count) are in the lobby and every other human there is ready. */
 function canStartRace(lobby: readonly PlayerState[], hostSlot: number, humans: number): boolean {
-  return lobby.length >= 2 && lobby.some((p) => p.slot === hostSlot) && lobby.every((p) => p.slot === hostSlot || p.slot >= humans || p.ready);
+  return lobby.length >= 2 && lobby.some((p) => p.slot === hostSlot) && lobby.every((p) => p.slot === hostSlot || isBotSeat(p, humans) || p.ready);
 }
 
 /** Puts the given slots on the start grid (in order) and begins the countdown. Everyone else watches. */
@@ -717,26 +737,41 @@ function beginRace(s: GameState, frame: number, prep: PreparedMap, participants:
 export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
   const frame = state.frame + 1;
   const humans = state.players.length - state.bots;
-  // AI racers (the last `bots` slots) are driven by the simulation itself, from the state, so every client agrees on them.
+  // A person who arrives in a seat the host had filled with an AI racer takes it back (in the lobby, never mid-race).
+  const lobbyNow = state.phase === 'BUILD' || state.phase === 'RESULTS';
+  const reclaimed = state.players.map((p) => (p.isBot && p.slot < humans && lobbyNow && rawInputs[p.slot]?.present === true ? { ...p, isBot: false, brain: NEW_BRAIN, ready: false, lastSeen: frame } : p));
+  const stateNow: GameState = reclaimed.some((p, i) => p !== state.players[i]) ? { ...state, players: reclaimed } : state;
+  // AI racers are driven by the simulation itself, from the state, so every client agrees on them.
   const brains = new Map<number, Brain>();
-  const inputs = state.players.map((p) => {
-    if (p.slot < humans) return normaliseInput(rawInputs[p.slot]);
-    const bot = botInput(state, prep, p.slot, frame);
+  const inputs = stateNow.players.map((p) => {
+    if (!isBotSeat(p, humans)) return normaliseInput(rawInputs[p.slot]);
+    const bot = botInput(stateNow, prep, p.slot, frame);
     brains.set(p.slot, bot.brain);
     return normaliseInput(bot.input);
   });
   // Presence: a connected client announces itself every tick; an empty slot sends the neutral input.
-  const seen = state.players.map((p, i) => (i < humans ? (inputs[i]!.present ? { ...p, lastSeen: frame } : p) : { ...p, brain: brains.get(p.slot) ?? p.brain }));
+  let seen = stateNow.players.map((p, i) => (!isBotSeat(p, humans) ? (inputs[i]!.present ? { ...p, lastSeen: frame } : p) : { ...p, brain: brains.get(p.slot) ?? p.brain }));
   const here = (p: PlayerState): boolean => isHere(p, frame, humans);
   const hostSlot = hostSlotOf(seen, frame, humans);
   const startPressed = hostSlot >= 0 && inputs[hostSlot]!.start;
+  // The host fills the empty seats with AI racers, or sends the ones it added home again.
+  let botLevel = stateNow.botLevel;
+  if (lobbyNow && hostSlot >= 0) {
+    const hostInput = inputs[hostSlot]!;
+    if (hostInput.fillBots) {
+      botLevel = hostInput.botLevel;
+      seen = seen.map((p) => (here(p) ? p : { ...p, isBot: true, ready: true, brain: NEW_BRAIN }));
+    } else if (hostInput.removeBots) {
+      seen = seen.map((p) => (p.isBot ? { ...p, isBot: false, ready: false, brain: NEW_BRAIN, lastSeen: -100000 } : p));
+    }
+  }
 
   // Back to the lobby is each player's own choice: pressing Rematch (on the results, or while a race they are not in is
   // running) moves only that player to the build screen; their build and ready flag follow their input from then on.
   let basePlayers = seen;
   if (state.phase !== 'BUILD') {
     basePlayers = seen.map((p, i) => {
-      if (i >= humans || !here(p)) return p;
+      if (isBotSeat(p, humans) || !here(p)) return p;
       const input = inputs[i]!;
       const mayLatch = state.phase === 'RESULTS' || !p.inRace;
       if (!mayLatch || !(p.rematch || input.rematch)) return p;
@@ -744,13 +779,13 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     });
   }
   if (state.phase === 'RESULTS') {
-    const presentHumans = basePlayers.filter((p) => p.slot < humans && here(p));
+    const presentHumans = basePlayers.filter((p) => !isBotSeat(p, humans) && here(p));
     // Everyone who is here has come back: a fresh build phase for the whole room.
-    if (presentHumans.length > 0 && presentHumans.every((p) => p.rematch)) return restartState({ ...state, players: basePlayers }, frame, prep);
+    if (presentHumans.length > 0 && presentHumans.every((p) => p.rematch)) return restartState({ ...stateNow, botLevel, players: basePlayers }, frame, prep);
     // The host does not have to wait for stragglers: start for those who are already in the lobby.
-    const lobby = basePlayers.filter((p) => p.slot >= humans || (here(p) && p.rematch));
+    const lobby = basePlayers.filter((p) => isBotSeat(p, humans) || (here(p) && p.rematch));
     if (startPressed && canStartRace(lobby, hostSlot, humans)) {
-      const fresh = restartState({ ...state, players: basePlayers }, frame, prep);
+      const fresh = restartState({ ...stateNow, botLevel, players: basePlayers }, frame, prep);
       return beginRace(fresh, frame, prep, lobby.map((p) => p.slot));
     }
   }
@@ -772,7 +807,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     players = players.map((p, i) => (here(p) ? { ...p, ready: inputs[i]!.ready, build: buildOf(inputs[i]!) } : p));
     const lobby = players.filter(here);
     if (startPressed && canStartRace(lobby, hostSlot, humans)) {
-      return beginRace({ ...state, players }, frame, prep, lobby.map((p) => p.slot));
+      return beginRace({ ...stateNow, botLevel, players }, frame, prep, lobby.map((p) => p.slot));
     }
   } else if (phase === 'COUNTDOWN' && frame - phaseStart >= COUNTDOWN_TICKS) {
     phase = 'RACING';
@@ -909,7 +944,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
 
       // --- a bot that is lost is put back on the route a little further on ---
       let botBrain = p.brain;
-      if (racing && p.slot >= humans && p.brain.idle > BOT_RESCUE_TICKS && frame >= p.frozenUntil && p.finishTick < 0) {
+      if (racing && isBotSeat(p, humans) && p.brain.idle > BOT_RESCUE_TICKS && frame >= p.frozenUntil && p.finishTick < 0) {
         const pose = rescuePose(prep, p.brain.index);
         if (pose !== undefined) {
           respawns.push(chassisBody(p.slot, p.build, pose.x, pose.z, pose.yaw));
@@ -1269,7 +1304,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       world = applyDeterministicWorldEdit3D(world, { replace: edits, removeJointIds: ropes });
     }
     // The race ends when every human in it has finished (bots and spectators never hold it open).
-    const racersHuman = players.filter((p) => p.inRace && p.slot < humans);
+    const racersHuman = players.filter((p) => p.inRace && !isBotSeat(p, humans));
     const allDone = racersHuman.length > 0 && racersHuman.every((p) => p.finishTick >= 0);
     const firstFinish = finishOrder.length > 0 ? players[finishOrder[0]!]!.finishTick : -1;
     if (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS)) {
@@ -1278,7 +1313,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, blobs, pickups, nextPickupId, seed: state.seed, bots: state.bots, raceStart, finishOrder, activeCells };
+  return { frame, phase, phaseStart, physics: world, players, slicks, blobs, pickups, nextPickupId, seed: state.seed, bots: state.bots, botLevel, raceStart, finishOrder, activeCells };
 }
 
 export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
@@ -1306,7 +1341,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       joined: isHere(p, state.frame, state.players.length - state.bots),
       inRace: p.inRace,
       host: p.slot === hostSlot,
-      bot: p.slot >= state.players.length - state.bots,
+      bot: isBotSeat(p, state.players.length - state.bots),
       ...pose,
       nextCheckpoint: p.nextCheckpoint,
       finishTick: p.finishTick,
