@@ -1,0 +1,20 @@
+{
+  "requiresToken": false,
+  "scoreOrder": "lowest",
+  "minScore": 10000,
+  "maxScore": 3600000,
+  "minDurationSec": 10,
+  "maxDurationSec": 3600,
+  "modes": {
+    "route1": { "displayName": "Osu-Labone Twist" },
+    "osu-backstreets": { "displayName": "Osu Back Streets" },
+    "cantonments": { "displayName": "Osu to Cantonments" },
+    "jamestown": { "displayName": "Jamestown Maze" },
+    "ring-sprint": { "displayName": "Ring Road Sprint" }
+  },
+  "periods": {
+    "alltime": { "displayName": "All Time", "type": "alltime" },
+    "weekly": { "displayName": "This Week", "type": "weekly" }
+  },
+  "displaySettings": { "maxEntriesPerPage": 20 }
+}

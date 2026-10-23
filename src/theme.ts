@@ -1,8 +1,8 @@
 export const theme = {
-  background: '#1a1a2e',
+  background: '#0b1020',
   surface: '#16213e',
-  primary: '#667eea',
-  secondary: '#764ba2',
+  primary: '#6fbf5a',
+  secondary: '#9a5abf',
   text: '#ffffff',
   textMuted: 'rgba(255, 255, 255, 0.7)',
 };
