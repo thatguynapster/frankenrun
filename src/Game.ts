@@ -10,6 +10,7 @@ import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, typ
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS, TICK_RATE } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
 import { ROUTES, featuredRoute } from './routes.js';
+import { DEFAULT_STYLE, botStyle, cleanStyle, packStyle, unpackStyle, type Style } from './render/monsters/style.js';
 import { getPreparedMap } from './sim/world.js';
 import { TipCoach } from './tips.js';
 import { AudioEngine, type AudioSettings, type Scene } from './audio/engine.js';
@@ -76,8 +77,12 @@ export interface UiState {
   /** Gametags by slot (own tag from the profile, others relayed through the room). */
   readonly names: Readonly<Record<number, string>>;
   readonly menuOpen: boolean;
+  /** This player's colour tint and hat. */
+  readonly style: Style;
+  /** Everyone's style by slot (received from the room; bots have their own). */
+  readonly styles: Readonly<Record<number, Style>>;
   /** Which group of the lobby's pick grid is showing. */
-  readonly lobbyTab: 'body' | 'legs' | 'arms' | 'head';
+  readonly lobbyTab: 'body' | 'legs' | 'arms' | 'head' | 'style';
   /** Where each lobby monster's name tag goes (fractions of the screen). */
   readonly labels: readonly { readonly slot: number; readonly x: number; readonly y: number }[];
   /** Pictures of the bodies and parts, keyed like `legs:1` (empty until drawn). */
@@ -185,6 +190,8 @@ export class Game {
   private aimScreen: { x: number; y: number } | null = null;
   private ownName = '';
   private names = new Map<number, string>();
+  private style: Style = DEFAULT_STYLE;
+  private styles = new Map<number, Style>();
   private lastNameSend = 0;
   private lastOccupied = -1;
   private unbindNames: (() => void) | undefined;
@@ -242,6 +249,7 @@ export class Game {
     this.raf = requestAnimationFrame(this.frame);
     void this.loadGraphics();
     void this.loadBuild();
+    void this.loadStyle();
     void this.tips.load();
     void this.loadSettings();
     void this.loadProfile();
@@ -280,6 +288,36 @@ export class Game {
     }
   }
 
+  /** Everyone's look by slot: ours, the ones received from the room, and the bots' own. */
+  private styleTable(): Record<number, Style> {
+    const table: Record<number, Style> = {};
+    for (const [slot, style] of this.styles) table[slot] = style;
+    const frame = this.snapshot?.interpolatedRenderState ?? this.snapshot?.renderState;
+    for (const p of frame?.players ?? []) if (p.bot) table[p.slot] = botStyle(p.slot);
+    table[this.snapshot?.localSlot ?? 0] = this.style;
+    return table;
+  }
+
+  /** Picks a colour tint and/or hat; saved on the device and sent to the room. */
+  setStyle(patch: Partial<Style>): void {
+    this.style = cleanStyle({ ...this.style, ...patch });
+    RundotGameAPI.appStorage.setItem('frankenrun.style', JSON.stringify(this.style)).catch(() => undefined);
+    this.lastNameSend = 0; // tell the room soon
+    this.emit();
+  }
+
+  private async loadStyle(): Promise<void> {
+    try {
+      const saved = await RundotGameAPI.appStorage.getItem('frankenrun.style');
+      if (saved) {
+        this.style = cleanStyle(JSON.parse(saved));
+        this.emit();
+      }
+    } catch {
+      // No saved style: the default look.
+    }
+  }
+
   private nameTable(): Record<number, string> {
     const table: Record<number, string> = {};
     for (const [slot, name] of this.names) table[slot] = name;
@@ -293,11 +331,18 @@ export class Game {
     this.unbindNames?.();
     this.unbindNames = undefined;
     this.names.clear();
+    this.styles.clear();
     try {
       this.unbindNames = this.runner.onEphemeral((slot, payload) => {
         const name = cleanName((payload as { n?: unknown } | null)?.n);
         if (name !== '' && this.names.get(slot) !== name) {
           this.names.set(slot, name);
+          this.emit();
+        }
+        const style = unpackStyle((payload as { s?: unknown } | null)?.s);
+        const had = this.styles.get(slot);
+        if (style !== undefined && (had === undefined || had.tint !== style.tint || had.hat !== style.hat)) {
+          this.styles.set(slot, style);
           this.emit();
         }
       });
@@ -315,7 +360,7 @@ export class Game {
     this.lastNameSend = now;
     this.lastOccupied = occupied;
     try {
-      this.runner.sendEphemeral({ n: this.ownName });
+      this.runner.sendEphemeral({ n: this.ownName, s: packStyle(this.style) });
     } catch {
       // Best effort.
     }
@@ -489,6 +534,8 @@ export class Game {
       labels: this.view.lobbyLabels(),
       icons: this.view.icons() ?? {},
       lobbyTab: this.lobbyTab,
+      style: this.style,
+      styles: this.styleTable(),
       picking: this.picking,
       routeOffset: this.routeOffset,
       board: this.board,
@@ -716,6 +763,7 @@ export class Game {
     this.view.setAim(this.screen === 'play' && !this.menuOpen && this.aimScreen !== null ? this.view.groundPoint(this.aimScreen.x, this.aimScreen.y) : null);
     const r0 = performance.now();
     const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
+    this.view.setStyles(this.styleTable());
     this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
     this.perfRender += performance.now() - r0;
     this.perfFrames += 1;

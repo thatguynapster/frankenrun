@@ -1212,3 +1212,51 @@ body {
   position: relative;
   z-index: 1;
 }
+
+/* Lobby Style tab: colour swatches and hat chips. */
+.tabs {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.style-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.style-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.8;
+}
+
+.swatches {
+  display: flex;
+  gap: 8px;
+}
+
+.swatch {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+}
+
+.swatch:active {
+  transform: scale(0.92);
+}
+
+.swatch.on {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 10px var(--color-primary);
+}
+
+.dot {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  vertical-align: middle;
+}

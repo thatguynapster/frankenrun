@@ -1,4 +1,5 @@
 import { ROUTES, routeInfo } from './routes.js';
+import { HATS, TINTS, type Style } from './render/monsters/style.js';
 import { SHOW_LEADERBOARD, formatTime } from './leaderboard.js';
 import { useCallback, useRef, useState } from 'react';
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
@@ -301,7 +302,7 @@ const BOT_NAMES = ['Ghoul', 'Wraith', 'Zombie', 'Mummy', 'Banshee', 'Vampire', '
 /** The name an AI racer races under. */
 const botName = (slot: number): string => `${BOT_NAMES[slot % BOT_NAMES.length]} (bot)`;
 
-function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission'] }) {
+function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub, styles }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission']; styles: Readonly<Record<number, Style>> }) {
   const me = frame.players[meSlot];
   const nameOf = (slot: number): string => names[slot] ?? (frame.players[slot]?.bot ? botName(slot) : `Player ${slot + 1}`);
   const racers = frame.players.filter((p) => p.inRace); // AI racers count: they are part of the race
@@ -326,6 +327,7 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub
           const t = frame.players[slot]?.finishTick ?? 0;
           return (
             <li key={i}>
+              <i className="dot" style={{ background: `#${(TINTS[styles[slot]?.tint ?? 0]?.color ?? 0xffffff).toString(16).padStart(6, '0')}` }} /> {HATS[styles[slot]?.hat ?? 0]?.glyph}{' '}
               {nameOf(slot)}
               {slot === meSlot ? ' (you)' : ''} - {((t - frame.raceStart) / TICK).toFixed(1)}s
               <small className="muted"> · parts lost {frame.players[slot]?.partsLost ?? 0}, picked up {frame.players[slot]?.partsGained ?? 0}, stolen {frame.players[slot]?.partsStolen ?? 0}</small>
@@ -395,9 +397,10 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
       { key: 'legs', label: 'Legs', items: LEG_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
       { key: 'arms', label: 'Arms', items: ARM_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
       { key: 'head', label: 'Head', items: HEAD_PARTS.map((x, i) => ({ id: i, name: x.name, blurb: x.blurb })) },
+      { key: 'style', label: 'Style', items: [] as { id: number; name: string; blurb: string }[] },
     ] as const;
     const tab = tabs.find((t) => t.key === ui.lobbyTab) ?? tabs[0];
-    const locked = tab.key === 'body' ? ui.ready : ui.ready && !isHost;
+    const locked = tab.key === 'style' ? false : tab.key === 'body' ? ui.ready : ui.ready && !isHost;
     return (
       <div className="panel lobby">
         <div
@@ -424,6 +427,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             const inLobby = frame.phase === 'BUILD' || p?.rematch === true;
             return (
               <span key={l.slot} className={`name-tag ${p?.host || p?.ready ? 'ready' : ''} ${inLobby ? '' : 'away'}`} style={{ left: `${l.x * 100}%`, top: `${l.y * 100}%` }}>
+                {HATS[ui.styles[l.slot]?.hat ?? 0]?.glyph}{' '}
                 {nameOf(l.slot)}
                 {l.slot === me.slot ? ' (you)' : ''}
                 {p?.host ? ' ★' : ''}
@@ -458,15 +462,33 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
               </button>
             ))}
           </div>
+          {tab.key === 'style' && (
+            <div className="style-panel">
+              <b className="style-label">Colour</b>
+              <div className="swatches">
+                {TINTS.map((t, i) => (
+                  <button key={t.name} className={`swatch ${ui.style.tint === i ? 'on' : ''}`} style={{ background: `#${t.color.toString(16).padStart(6, '0')}` }} aria-label={t.name} title={t.name} onClick={() => game.setStyle({ tint: i })} />
+                ))}
+              </div>
+              <b className="style-label">Hat</b>
+              <div className="chips">
+                {HATS.map((h, i) => (
+                  <button key={h.name} className={`chip ${ui.style.hat === i ? 'on' : ''}`} onClick={() => game.setStyle({ hat: i })}>
+                    {h.glyph} {h.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="option-grid">
-            {tab.items.map((item) => (
+            {tab.key !== 'style' && tab.items.map((item) => (
               <button key={item.name} className={`option ${tab.key} ${ui.build[tab.key] === item.id ? 'on' : ''}`} disabled={locked} onClick={() => pick(tab.key, item.id)}>
                 {ui.icons[`${tab.key}:${item.id}`] ? <img src={ui.icons[`${tab.key}:${item.id}`]} alt="" draggable={false} /> : <span className="icon-fallback" />}
                 <b>{item.name}</b>
               </button>
             ))}
           </div>
-          <p className="blurb">{tab.items[ui.build[tab.key]]?.blurb}</p>
+          <p className="blurb">{tab.key === 'style' ? 'Pick a colour and a hat. Everyone in the room sees them.' : tab.items[ui.build[tab.key]]?.blurb}</p>
           <div className="stats compact">
             <StatBar label="Top speed" value={stats.topKmh} max={110} text={`${stats.topKmh} km/h`} />
             <StatBar label="Acceleration" value={stats.accel} max={1.7} />
@@ -497,7 +519,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   // started): they keep the last results they saw and can join the next race.
   if (raceOn && !me.inRace) {
     if (ui.cachedResults) {
-      return <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
+      return <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
     }
     return (
       <div className="panel center">
@@ -604,7 +626,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         </div>
       </div>
       {(frame.phase === 'RESULTS' || me.finishTick >= 0) && (
-        <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
+        <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
       )}
       {ui.tip && me.finishTick < 0 && frame.phase !== 'RESULTS' && (
         <button className="tip" onClick={() => game.dismissTip()}>

@@ -8,6 +8,9 @@ import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
 import { makeIcons } from './partIcons.js';
 import { buildCity, cutaway } from './city.js';
 import { Particles } from './Particles.js';
+import { Atmosphere } from './atmosphere.js';
+import { themeFor, type RouteTheme } from '../routes.js';
+import { DEFAULT_STYLE, type Style } from './monsters/style.js';
 import type { SoundId } from '../audio/manifest.js';
 
 const SLOT_COLORS = [0x6fbf5a, 0x5aa7bf, 0xbf7a5a, 0xbfa95a, 0x9a5abf, 0xbf5a8d, 0x5abf9a, 0xbfbfbf, 0x5a6fbf, 0xbf5a5a]; // one per slot, up to 10
@@ -55,6 +58,14 @@ export class RaceView {
   private lobbyLabelList: { slot: number; x: number; y: number }[] = [];
   private iconCache: Record<string, string> | undefined;
   private readonly worldBackground = new THREE.Color(0x232b52);
+  private worldFog = new THREE.Fog(0x232b52, 50, 230);
+  private hemi: THREE.HemisphereLight;
+  private moonLight: THREE.DirectionalLight;
+  private atmosphere: Atmosphere;
+  private theme: RouteTheme = themeFor('route1');
+  private styles: Readonly<Record<number, Style>> = {};
+  /** Glowing wisps that circle each checkpoint. */
+  private wisps: { group: THREE.Group; orbs: THREE.Mesh[] }[] = [];
   private readonly lobbyBackground = new THREE.Color(0x16122e);
   private debris: Debris[] = [];
   private rings: THREE.Mesh[] = [];
@@ -101,18 +112,31 @@ export class RaceView {
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block;touch-action:none';
 
-    this.scene.background = new THREE.Color(0x232b52);
-    this.scene.fog = new THREE.Fog(0x232b52, 50, 230);
-    this.scene.add(new THREE.HemisphereLight(0xb8c4ff, 0x3a3358, 2.4));
-    const moon = new THREE.DirectionalLight(0xeaf0ff, 2.6);
-    moon.position.set(-60, 120, -40);
-    this.scene.add(moon);
+    this.scene.background = this.worldBackground;
+    this.scene.fog = this.worldFog;
+    this.hemi = new THREE.HemisphereLight(0xb8c4ff, 0x3a3358, 2.4);
+    this.scene.add(this.hemi);
+    this.moonLight = new THREE.DirectionalLight(0xeaf0ff, 2.6);
+    this.moonLight.position.set(-60, 120, -40);
+    this.scene.add(this.moonLight);
+    this.atmosphere = new Atmosphere(this.scene, this.hemi, this.moonLight);
+    this.applyTheme(this.theme);
     this.scene.add(this.lobbyStage.group);
     this.scene.add(this.particles.points);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
     this.resize();
+  }
+
+  /** Dresses the world in a route's atmosphere: sky, fog, light colours, stars and moon. */
+  private applyTheme(theme: RouteTheme): void {
+    this.theme = theme;
+    this.worldBackground.set(theme.sky);
+    this.worldFog.color.set(theme.fog);
+    this.worldFog.near = theme.fogNear;
+    this.worldFog.far = theme.fogFar;
+    this.atmosphere.apply(theme);
   }
 
   /** Builds (or rebuilds) the static city for a baked map. Everything is merged into a handful of meshes. */
@@ -126,6 +150,8 @@ export class RaceView {
     const group = new THREE.Group();
     this.worldGroup = group;
     this.rings = [];
+    this.wisps = [];
+    this.applyTheme(themeFor(map.id));
     this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
     this.prep = getPreparedMap(map.id);
     this.setRoute(map);
@@ -163,7 +189,7 @@ export class RaceView {
     }
 
     // Buildings with painted walls, lit windows and roofs, plus street lamps (see city.ts), merged per 100 m chunk.
-    for (const object of buildCity(map)) group.add(object);
+    for (const object of buildCity(map, themeFor(map.id).cityTint)) group.add(object);
 
     // Walls and the boundary.
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x6a5a86, flatShading: true });
@@ -201,15 +227,32 @@ export class RaceView {
     group.add(poles);
 
     // Checkpoints.
+    const accent = themeFor(map.id).accent;
     map.checkpoints.forEach((cp, i) => {
       const final = i === map.checkpoints.length - 1;
+      const color = final ? 0xffd23b : accent;
       const ring = new THREE.Mesh(
         new THREE.CylinderGeometry(CHECKPOINT_RADIUS, CHECKPOINT_RADIUS, 14, 32, 1, true),
-        new THREE.MeshBasicMaterial({ color: final ? 0xffd23b : 0x3bd1ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }),
       );
       ring.position.set(cp.x / 10, 7, cp.z / 10);
       group.add(ring);
       this.rings.push(ring);
+      // ghostly extras: a glowing circle on the road and a few spirit wisps drifting round the ring
+      const wisp = new THREE.Group();
+      wisp.position.set(cp.x / 10, 0, cp.z / 10);
+      const circle = new THREE.Mesh(new THREE.TorusGeometry(CHECKPOINT_RADIUS - 0.4, 0.22, 4, 36), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false }));
+      circle.rotation.x = Math.PI / 2;
+      circle.position.y = 0.2;
+      wisp.add(circle);
+      const orbs: THREE.Mesh[] = [];
+      for (let k = 0; k < 5; k += 1) {
+        const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 0), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+        wisp.add(orb);
+        orbs.push(orb);
+      }
+      group.add(wisp);
+      this.wisps.push({ group: wisp, orbs });
     });
     this.scene.add(group);
   }
@@ -368,6 +411,7 @@ export class RaceView {
     if (p.trailing && !rig.lastSpew && phase === 'RACING') this.particles.burst(p.x, p.y + 2.4, p.z, { count: 18, color: 0x7dff3a, speed: 3, up: 8, life: 0.7 });
     rig.lastSpew = p.trailing;
     rig.model.setBuild(b);
+    rig.model.setStyle(this.styles[p.slot] ?? DEFAULT_STYLE);
     rig.model.update(p, dt, time);
     if (p.swingPole >= 0) {
       const pole = this.anchors[p.swingPole];
@@ -601,6 +645,11 @@ export class RaceView {
     this.scene.add(this.colliderLines);
   }
 
+  /** Everyone's colour tint and hat, by slot. */
+  setStyles(styles: Readonly<Record<number, Style>>): void {
+    this.styles = styles;
+  }
+
   /** Camera shake: a short, small jolt (intensity in metres, duration in seconds). A bigger jolt replaces a smaller one. */
   shake(intensity: number, seconds = 0.3): void {
     if (intensity * 1 < this.shakeAmp * (this.shakeLeft / this.shakeFor)) return;
@@ -656,12 +705,13 @@ export class RaceView {
     this.lobbyOn = on;
     if (on && this.iconCache === undefined) this.iconCache = makeIcons(this.renderer);
     cutaway.on.value = 0;
+    this.atmosphere.update(this.camera, 0, !on);
     this.lobbyStage.group.visible = on;
     this.particles.clear();
     this.shakeLeft = 0;
     if (this.worldGroup) this.worldGroup.visible = !on;
     this.scene.background = on ? this.lobbyBackground : this.worldBackground;
-    this.scene.fog = on ? null : new THREE.Fog(0x232b52, 50, 230);
+    this.scene.fog = on ? null : this.worldFog;
     for (const r of this.rings) r.visible = !on;
     for (const p of this.pickupPool) p.group.visible = false;
     for (const s of this.slickPool) s.visible = false;
@@ -694,11 +744,18 @@ export class RaceView {
       // The model is updated facing forward and turned afterwards: a turning pose would make it shuffle its feet as if pivoting.
       const pose = { x: spot.x, y: FLOOR_Y + 1, z: spot.z, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, swingPole: -1, trailing: false };
       rig.model.setBuild(p.build);
+      rig.model.setStyle(this.styles[p.slot] ?? DEFAULT_STYLE);
       rig.model.update(pose, dt, time);
       rig.model.root.rotation.y = yaw;
       spots.push({ spot, ready: p.ready || p.host });
       const head = new THREE.Vector3(spot.x, FLOOR_Y + 4.3, spot.z).project(this.camera);
       this.lobbyLabelList.push({ slot: p.slot, x: (head.x + 1) / 2, y: (1 - head.y) / 2 });
+    });
+    // name tags that would sit on top of each other: lift every other one
+    const byX = [...this.lobbyLabelList].sort((a, b) => a.x - b.x);
+    byX.forEach((tag, i) => {
+      const prev = byX[i - 1];
+      if (prev !== undefined && Math.abs(tag.x - prev.x) < 0.2 && Math.abs(tag.y - prev.y) < 0.09) tag.y = prev.y - 0.085;
     });
     this.lobbyStage.setSpots(spots);
     this.lobbyStage.update(time);
@@ -747,6 +804,7 @@ export class RaceView {
       });
       this.updateDebris(dtSeconds);
       this.particles.update(dtSeconds);
+      this.atmosphere.update(this.camera, frame.frame / 30, true);
       this.updateSlicks(frame, dtSeconds, frame.frame / 30);
       this.updatePickups(frame, frame.frame / 30);
       // A player with no monster in this race (late joiner, or left out of it) watches the race leader.
@@ -765,6 +823,19 @@ export class RaceView {
       this.rings.forEach((ring, i) => {
         const mat = ring.material as THREE.MeshBasicMaterial;
         mat.opacity = i === next ? 0.38 : i < next ? 0.04 : 0.14;
+      });
+      // wisps circle the checkpoint you are heading for and drift dimly round the others still ahead; done ones are quiet
+      const t = frame.frame / 30;
+      this.wisps.forEach((w, i) => {
+        w.group.visible = i >= next;
+        if (i < next) return;
+        const bright = i === next;
+        w.orbs.forEach((orb, k) => {
+          const a = t * (bright ? 0.9 : 0.4) + (k / w.orbs.length) * Math.PI * 2;
+          const r = CHECKPOINT_RADIUS - 1 + Math.sin(t * 1.3 + k) * 0.8;
+          orb.position.set(Math.cos(a) * r, 1.6 + (bright ? 3.4 : 1.6) * (0.5 + 0.5 * Math.sin(t * 1.7 + k * 1.9)), Math.sin(a) * r);
+          orb.scale.setScalar(bright ? 1.2 : 0.7);
+        });
       });
     }
     this.renderer.render(this.scene, this.camera);

@@ -15,6 +15,7 @@ const CHUNK = 100; // metres: geometry is merged per chunk so the camera can ski
 const FACADES = [0xe8d9b5, 0xd9a441, 0xc7704f, 0xa9c9a4, 0x8fb4d8, 0xe3a6b4, 0xf0ebe0, 0xcfa27a, 0x9fd0c8];
 const ROOFS = [0x9c4a3a, 0x6d7a86, 0xa3552f, 0x4f6f6a, 0x7a6a8a];
 const FLAT_ROOF = 0x8c8f99;
+const SIGN_COLORS = [0xff4fa3, 0x41e0ff, 0xffd23b, 0x7dff6a, 0xff7a2e, 0xb06bff];
 
 const h32 = (n: number): number => {
   let x = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
@@ -167,6 +168,9 @@ const moon = new THREE.Vector3(-0.45, 0.8, -0.3).normalize();
 const shadeFor = (nx: number, ny: number, nz: number): number => 0.5 + 0.62 * Math.max(0, nx * moon.x + ny * moon.y + nz * moon.z);
 
 interface Chunk {
+  cars: THREE.BufferGeometry[];
+  props: THREE.BufferGeometry[];
+  signs: THREE.BufferGeometry[];
   walls: THREE.BufferGeometry[];
   roofs: THREE.BufferGeometry[];
   lamps: THREE.BufferGeometry[];
@@ -177,7 +181,7 @@ function chunkOf(chunks: Map<string, Chunk>, x: number, z: number): Chunk {
   const key = `${Math.floor(x / CHUNK)},${Math.floor(z / CHUNK)}`;
   let c = chunks.get(key);
   if (c === undefined) {
-    c = { walls: [], roofs: [], lamps: [], pools: [] };
+    c = { cars: [], props: [], signs: [], walls: [], roofs: [], lamps: [], pools: [] };
     chunks.set(key, c);
   }
   return c;
@@ -223,6 +227,38 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
     }
   }
   if (wp.length > 0) chunk.walls.push(geometryFrom(wp, wc, wu));
+
+  // A glowing shop sign on the longest wall of some buildings (street level, facing out).
+  if (rand01(seed + 21) < 0.4 && height < 22) {
+    let bk = -1, blen = 0;
+    for (let k = 0; k < n; k += 1) {
+      const j = (k + 1) % n;
+      const len = Math.hypot(f.xs[j]! - f.xs[k]!, f.zs[j]! - f.zs[k]!);
+      if (len > blen) { blen = len; bk = k; }
+    }
+    if (bk >= 0 && blen > 5) {
+      const j = (bk + 1) % n;
+      const x0 = f.xs[bk]!, z0 = f.zs[bk]!, x1 = f.xs[j]!, z1 = f.zs[j]!;
+      const ux = (x1 - x0) / blen, uz = (z1 - z0) / blen;
+      const nx = sign * uz, nz = -sign * ux;
+      const w = Math.min(3.6, blen * 0.55), h = 0.8, y0 = 2.55;
+      const t = 0.3 + 0.4 * rand01(seed + 33);
+      const cx = x0 + (x1 - x0) * t, cz = z0 + (z1 - z0) * t;
+      const neon = new THREE.Color(SIGN_COLORS[h32(seed + 44) % SIGN_COLORS.length]!);
+      const dark = new THREE.Color(0x14121f);
+      const quad = (grow: number, off: number, c: THREE.Color): void => {
+        const hw = w / 2 + grow, hh = h / 2 + grow;
+        const px = cx + nx * off, pz = cz + nz * off, yc = y0 + h / 2;
+        const a = [px - ux * hw, yc - hh, pz - uz * hw], b = [px + ux * hw, yc - hh, pz + uz * hw], c2 = [px + ux * hw, yc + hh, pz + uz * hw], d = [px - ux * hw, yc + hh, pz - uz * hw];
+        const pos = [...a, ...b, ...c2, ...a, ...c2, ...d];
+        const col: number[] = [];
+        for (let v = 0; v < 6; v += 1) col.push(c.r, c.g, c.b);
+        chunk.signs.push(geometryFrom(pos, col));
+      };
+      quad(0.12, 0.05, dark); // backing board
+      quad(0, 0.1, neon); // the glowing panel
+    }
+  }
 
   // roof
   const rp: number[] = [], rc: number[] = [];
@@ -279,6 +315,79 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   if (rp.length > 0) chunk.roofs.push(geometryFrom(rp, rc));
 }
 
+// ---------- scenery: parked cars, trees, gravestones, pumpkins ----------
+
+const GLOW = new THREE.Color(0xffe84a);
+/** Bakes the moonlight into a Shape's vertex colours (the city is drawn unlit), keeping glowing parts bright. */
+function bakeShade(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const nor = g.getAttribute('normal'), col = g.getAttribute('color');
+  for (let v = 0; v < nor.count; v += 1) {
+    if (Math.abs(col.getX(v) - GLOW.r) < 0.02 && Math.abs(col.getY(v) - GLOW.g) < 0.02 && Math.abs(col.getZ(v) - GLOW.b) < 0.02) continue;
+    const s = shadeFor(nor.getX(v), nor.getY(v), nor.getZ(v));
+    col.setXYZ(v, Math.min(1, col.getX(v) * s), Math.min(1, col.getY(v) * s), Math.min(1, col.getZ(v) * s));
+  }
+  g.deleteAttribute('normal');
+  return g;
+}
+
+const CAR_COLORS = [0xd9d9e0, 0xb02a2a, 0x2a5fb0, 0x1f1f26, 0xe8c640, 0x3a8a4a];
+const templates = new Map<string, THREE.BufferGeometry>();
+function template(key: string, build: () => THREE.BufferGeometry): THREE.BufferGeometry {
+  let t = templates.get(key);
+  if (t === undefined) {
+    t = bakeShade(build());
+    templates.set(key, t);
+  }
+  return t;
+}
+
+function carTemplate(colorIndex: number): THREE.BufferGeometry {
+  return template(`car${colorIndex}`, () => {
+    const c = CAR_COLORS[colorIndex % CAR_COLORS.length]!;
+    const s = new Shape();
+    s.box(1.9, 0.75, 4.3, c, { p: [0, 0.62, 0] }); // body (length along +Z)
+    s.box(1.62, 0.6, 2.2, c, { p: [0, 1.28, -0.2] }); // cabin
+    s.box(1.66, 0.34, 2.0, 0x23283a, { p: [0, 1.3, -0.2] }); // windows
+    for (const sx of [-0.95, 0.95]) for (const sz of [-1.4, 1.4]) s.cyl(0.36, 0.36, 0.3, 8, 0x14141c, { p: [sx, 0.36, sz], r: [0, 0, Math.PI / 2] });
+    s.box(1.3, 0.14, 0.08, 0xfff1b8, { p: [0, 0.78, 2.16] }); // headlights
+    return s.build();
+  });
+}
+
+function decorTemplate(kind: number, seed: number): THREE.BufferGeometry {
+  const leaf = [0x4f7a3a, 0xc96a1e, 0x6a4a8a][seed % 3]!;
+  const variant = kind === 0 ? seed % 3 : 0;
+  return template(`decor${kind}-${variant}`, () => {
+    const s = new Shape();
+    if (kind === 0) {
+      s.cyl(0.16, 0.26, 2.4, 5, 0x4a3426, { p: [0, 1.2, 0] }, true);
+      s.ico(1.5, 0, leaf, { p: [0, 3.3, 0], s: [1, 0.85, 1] });
+      s.ico(1.0, 0, new THREE.Color(leaf).lerp(new THREE.Color(0xffffff), 0.18).getHex(), { p: [0.3, 4.3, 0.1] });
+    } else if (kind === 1) {
+      const wood = 0x2f2a33;
+      s.cyl(0.1, 0.28, 3.4, 5, wood, { p: [0, 1.7, 0] }, true);
+      s.limb([0, 2.4, 0], [0.95, 3.6, 0.2], 0.09, 0.03, wood, 5);
+      s.limb([0, 2.8, 0], [-0.85, 4.0, -0.3], 0.09, 0.03, wood, 5);
+      s.limb([0, 3.1, 0], [0.2, 4.6, 0.7], 0.08, 0.03, wood, 5);
+      s.limb([0.4, 3.2, 0.1], [1.1, 4.5, 0.4], 0.05, 0.02, wood, 4);
+    } else if (kind === 2) {
+      const stone = 0x9a9aa8;
+      s.ico(1.3, 0, 0x3a3a2e, { p: [0, 0.05, 0.5], s: [1.6, 0.22, 0.9] });
+      s.box(0.8, 1.1, 0.22, stone, { p: [0, 0.6, 0] });
+      s.ico(0.42, 0, stone, { p: [0, 1.15, 0], s: [1, 0.6, 0.3] });
+      s.box(0.6, 0.8, 0.2, 0x8a8a98, { p: [1.3, 0.4, 0.3], r: [0, 0.25, 0.12] });
+      s.box(0.55, 0.7, 0.2, 0x8a8a98, { p: [-1.2, 0.35, 0.5], r: [0, -0.2, -0.1] });
+    } else {
+      s.ico(0.5, 1, 0xff8a1f, { p: [0, 0.42, 0], s: [1.15, 0.85, 1.15] });
+      s.cyl(0.06, 0.09, 0.22, 5, 0x4a6a2a, { p: [0, 0.9, 0], r: [0.15, 0, 0.1] }, true);
+      s.box(0.12, 0.12, 0.05, 0xffe84a, { p: [-0.16, 0.5, 0.56] });
+      s.box(0.12, 0.12, 0.05, 0xffe84a, { p: [0.16, 0.5, 0.56] });
+      s.box(0.36, 0.08, 0.05, 0xffe84a, { p: [0, 0.3, 0.55] });
+    }
+    return s.build();
+  });
+}
+
 let lampTemplate: THREE.BufferGeometry | undefined;
 /** One street lamp at the origin, its arm reaching along +X. Vertex-coloured: dark metal and a bright cream lamp head. */
 function lampGeometry(): THREE.BufferGeometry {
@@ -316,13 +425,30 @@ function poolGeometry(): THREE.BufferGeometry {
 }
 
 /** Everything that makes the city look like a city: returns the meshes to add to the world group. */
-export function buildCity(map: MapData): THREE.Object3D[] {
+export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
   const chunks = new Map<string, Chunk>();
   map.buildings.forEach((b, i) => {
+    if (b.car !== undefined) return; // parked cars are drawn below
     const f = footprintOf(b);
     if (f === undefined) return;
     addBuilding(i, b, chunkOf(chunks, f.cx, f.cz));
   });
+  // parked cars (they are solid buildings in the map data) and street scenery
+  map.buildings.forEach((b) => {
+    if (b.car === undefined) return;
+    const f = footprintOf(b);
+    if (f === undefined || b.pts.length < 4) return;
+    const ux = b.pts[2]! - b.pts[0]!, uz = b.pts[3]! - b.pts[1]!;
+    const m = new THREE.Matrix4().makeRotationY(Math.atan2(ux, uz)).setPosition(f.cx, 0, f.cz);
+    chunkOf(chunks, f.cx, f.cz).cars.push(carTemplate(b.car - 1).clone().applyMatrix4(m));
+  });
+  const decorData = map.decor ?? [];
+  for (let k = 0; k + 3 < decorData.length; k += 4) {
+    const x = decorData[k]! / 10, z = decorData[k + 1]! / 10, kind = decorData[k + 2]!, seed = decorData[k + 3]!;
+    const size = 0.85 + 0.4 * rand01(seed + 3);
+    const m = new THREE.Matrix4().makeRotationY(rand01(seed + 7) * Math.PI * 2).scale(new THREE.Vector3(size, size, size)).setPosition(x, 0, z);
+    chunkOf(chunks, x, z).props.push(decorTemplate(kind, seed).clone().applyMatrix4(m));
+  }
   const lampData = map.lamps ?? [];
   for (let k = 0; k + 3 < lampData.length; k += 4) {
     // baked lamp: x, z in decimetres, then the direction toward the road as hundredths of a unit
@@ -337,6 +463,8 @@ export function buildCity(map: MapData): THREE.Object3D[] {
 
   const wallMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, map: getFacadeTexture() ?? null, side: THREE.DoubleSide });
   const solid = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  wallMaterial.color.set(tint); // the route's mood
+  solid.color.set(tint);
   makeCutaway(wallMaterial);
   makeCutaway(solid);
   const lampMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
@@ -355,6 +483,9 @@ export function buildCity(map: MapData): THREE.Object3D[] {
   for (const c of chunks.values()) {
     merge(c.walls, wallMaterial);
     merge(c.roofs, solid);
+    merge(c.signs, solid); // shop signs dissolve with their wall
+    merge(c.cars, solid); // parked cars can dissolve too, so they never hide a monster
+    merge(c.props, lampMaterial); // trees and graves stay put
     merge(c.lamps, lampMaterial); // lamp posts never dissolve (only buildings do)
     merge(c.pools, glow, 2);
   }

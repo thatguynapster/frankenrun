@@ -81,7 +81,7 @@ export class Shape {
 
   /** A tapered rod between two points (a limb segment, a claw, a horn). */
   /** A tapered rod between two points. Its ends are left open (a joint, claw or hand always covers them): half the triangles. */
-  limb(a: V3, b: V3, radiusA: number, radiusB: number, color: number, segments = 6): this {
+  limb(a: V3, b: V3, radiusA: number, radiusB: number, color: number, segments = 6, capped = false): this {
     const from = new THREE.Vector3(...a);
     const to = new THREE.Vector3(...b);
     const dir = to.clone().sub(from);
@@ -90,7 +90,7 @@ export class Shape {
     const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.clone().normalize());
     const euler = new THREE.Euler().setFromQuaternion(quat);
     const mid = from.clone().add(to).multiplyScalar(0.5);
-    return this.cyl(radiusB, radiusA, length, segments, color, { p: [mid.x, mid.y, mid.z], r: [euler.x, euler.y, euler.z] }, true);
+    return this.cyl(radiusB, radiusA, length, segments, color, { p: [mid.x, mid.y, mid.z], r: [euler.x, euler.y, euler.z] }, !capped);
   }
 
   /** Merges everything into one geometry. */

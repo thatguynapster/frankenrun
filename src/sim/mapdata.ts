@@ -14,6 +14,8 @@ export interface BuildingData {
   readonly h: number;
   /** Flat footprint [x, z, ...] decimetres (render). */
   readonly pts: readonly number[];
+  /** A parked car: 1 + its colour index (the footprint is the car, its first edge the length). Absent for a building. */
+  readonly car?: number;
   /**
    * Convex collider pieces (each <= 8 vertices, flat [x, z, ...] decimetres). A building is normally one
    * piece; a building that overlaps a road is cut back from the lane into several. Absent when it has none.
@@ -44,4 +46,6 @@ export interface MapData {
   readonly route?: readonly number[];
   /** Street lamps (scenery, some of them also tentacle anchors), flat [x, z, dirX, dirZ, ...]: decimetres, then the direction toward the road in hundredths. */
   readonly lamps?: readonly number[];
+  /** Trees, gravestones and pumpkins (scenery only), flat [x, z, kind, seed, ...]: decimetres, 0 tree, 1 dead tree, 2 gravestones, 3 pumpkin. */
+  readonly decor?: readonly number[];
 }

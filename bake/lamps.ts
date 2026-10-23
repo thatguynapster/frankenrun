@@ -14,16 +14,16 @@ const LAMP_MIN_APART = 16;
 const LAMP_SETBACK = 1.2;
 const MAX_LAMPS = 700;
 
-const h32 = (n: number): number => {
+export const h32 = (n: number): number => {
   let x = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
   x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
   return (x ^ (x >>> 16)) >>> 0;
 };
-const rand01 = (n: number): number => h32(n) / 4294967296;
+export const rand01 = (n: number): number => h32(n) / 4294967296;
 
 // ---------- footprint helpers ----------
 
-interface Footprint {
+export interface Footprint {
   readonly xs: number[];
   readonly zs: number[];
   readonly area: number;
@@ -31,7 +31,7 @@ interface Footprint {
   readonly cz: number;
 }
 
-function footprintOf(b: BuildingData): Footprint | undefined {
+export function footprintOf(b: BuildingData): Footprint | undefined {
   const xs: number[] = [], zs: number[] = [];
   for (let k = 0; k < b.pts.length; k += 2) {
     const x = b.pts[k]! / 10, z = b.pts[k + 1]! / 10;
@@ -55,7 +55,7 @@ function footprintOf(b: BuildingData): Footprint | undefined {
   return { xs, zs, area: a / 2, cx: cx / xs.length, cz: cz / xs.length };
 }
 
-function inside(f: Footprint, x: number, z: number): boolean {
+export function inside(f: Footprint, x: number, z: number): boolean {
   let c = false;
   for (let i = 0, j = f.xs.length - 1; i < f.xs.length; j = i, i += 1) {
     if (f.zs[i]! > z !== f.zs[j]! > z && x < ((f.xs[j]! - f.xs[i]!) * (z - f.zs[i]!)) / (f.zs[j]! - f.zs[i]!) + f.xs[i]!) c = !c;
@@ -65,7 +65,7 @@ function inside(f: Footprint, x: number, z: number): boolean {
 
 // ---------- a uniform grid over line segments, for "how close is the nearest wall or road" ----------
 
-class SegmentGrid {
+export class SegmentGrid {
   private readonly cells = new Map<number, number[]>();
   readonly segs: number[] = []; // x0, z0, x1, z1, tag
   constructor(private readonly cell = 16) {}

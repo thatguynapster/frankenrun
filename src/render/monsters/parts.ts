@@ -222,6 +222,7 @@ const WEREWOLF_LEGS: LegDef = {
       const s = new Shape();
       s.limb([0, 0, 0], [0, -0.5, 0.18], 0.22, 0.15, C.fur);
       s.ico(0.26, 1, C.fur, { p: [0, -0.17, 0.05], s: [1, 1.3, 1.1] });
+      s.ico(0.2, 0, C.furDark, { p: [0, -0.5, 0.18] }); // knee joint (the shin swings about this ball)
       s.cone(0.07, 0.22, 4, C.furDark, { p: [0, -0.25, -0.12], r: [-0.5, 0, 0] }); // fur tufts
       s.cone(0.06, 0.18, 4, C.furDark, { p: [0.1, -0.12, -0.1], r: [-0.5, 0, 0.3] });
       s.cone(0.06, 0.18, 4, C.furDark, { p: [-0.1, -0.12, -0.1], r: [-0.5, 0, -0.3] });
@@ -229,8 +230,8 @@ const WEREWOLF_LEGS: LegDef = {
     });
     const shinPieces = cached('wolf-shin', () => {
       const s = new Shape();
-      s.limb([0, 0, 0], [0, -0.42, -0.23], 0.15, 0.09, C.fur);
-      s.ico(0.12, 0, C.furDark, { p: [0, -0.42, -0.23] }); // ankle
+      s.limb([0, 0, 0], [0, -0.42, -0.23], 0.15, 0.09, C.fur); // its open top end sits inside the thigh's knee ball
+      s.ico(0.14, 0, C.furDark, { p: [0, -0.42, -0.23] }); // ankle
       s.limb([0, -0.42, -0.23], [0, -0.5, 0.12], 0.11, 0.08, C.furDark); // foot
       for (const dx of [-0.05, 0, 0.05]) s.cone(0.025, 0.16, 4, C.ivory, { p: [dx, -0.5, 0.18], r: [Math.PI / 2 + 0.25, 0, 0] }); // claws
       s.cone(0.03, 0.14, 4, C.ivory, { p: [0, -0.4, -0.31], r: [-Math.PI / 2 - 0.3, 0, 0] }); // heel spur
@@ -428,7 +429,8 @@ const TENTACLES: ArmDef = {
       cached(`tentacle-seg-${index}`, () => {
         const widths = [0.24, 0.18, 0.12, 0.05];
         const s = new Shape();
-        s.limb([0, 0, 0], [0, -0.5, 0], widths[index]!, widths[index + 1]!, index === 2 ? C.tentacleTip : C.tentacle, 6);
+        s.limb([0, 0, 0], [0, -0.5, 0], widths[index]!, widths[index + 1]!, index === 2 ? C.tentacleTip : C.tentacle, 6, index === 2);
+        s.ico(widths[index + 1]! * 1.05, 0, index === 2 ? C.tentacleTip : C.tentacle, { p: [0, -0.5, 0] }); // joint: the next segment bends about here
         for (const dz of [0.04, -0.04]) s.ico(0.05 - index * 0.008, 0, C.tentacleTip, { p: [0, -0.25, dz > 0 ? widths[index]! : -widths[index]!], s: [1, 1, 1] }); // suckers
         return [{ geometry: s.build(), material: 'lit' as MatKind }];
       });

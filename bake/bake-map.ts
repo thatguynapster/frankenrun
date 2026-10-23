@@ -8,6 +8,7 @@ import { dist, project, type Pt } from './lib/geo.ts';
 import type { BuildingData, MapData, RoadSeg, WallData } from '../src/sim/mapdata.ts';
 import { ROUTES } from './routes.ts';
 import { placeLamps } from './lamps.ts';
+import { carCorners, placeDecor } from './decor.ts';
 
 const id = process.argv[2] ?? 'route1';
 const def = ROUTES[id];
@@ -383,6 +384,19 @@ for (const l of lampSpots) {
 }
 console.log(`  lamps ${lampSpots.length}, of them tentacle anchors ${lampAnchors}`);
 
+// ---- scenery and parked cars (cars become solid, like buildings; they are added last so no anchor sits on one) ----
+const lampBounds = { minX: dm(Math.min(...lxs) - 250), maxX: dm(Math.max(...lxs) + 250), minZ: dm(Math.min(...lzs) - 250), maxZ: dm(Math.max(...lzs) + 250) };
+const street = placeDecor({ bounds: lampBounds, roads, buildings }, lampSpots, corridor.polyline);
+let solidCars = 0;
+for (const car of street.cars) {
+  const corners = carCorners(car);
+  const pieces = engineAccepts(corners, 1.5) ? [corners] : []; // a car is one box; it is too small for the building collider rules
+  if (pieces.length === 0) continue;
+  buildings.push({ h: dm(1.5), pts: flat(corners), hulls: pieces.map((pc) => flat(pc)), car: car.color + 1 });
+  solidCars += 1;
+}
+console.log(`  scenery ${street.decor.length}, parked cars ${solidCars}`);
+
 // ---- checkpoints: every ~400 m, at each turn > 60 degrees, plus start and finish; cap 12 ----
 const poly = corridor.polyline;
 const cum: number[] = [0];
@@ -462,6 +476,7 @@ const map: MapData = {
   anchors: anchors.map((a) => ({ x: dm(a.x), z: dm(a.z) })),
   lengthM: Math.round(corridor.length),
   route: routeFlat,
+  decor: street.decor.flatMap((d) => [dm(d.x), dm(d.z), d.kind, d.seed]),
   lamps: lampSpots.flatMap((l) => [dm(l.x), dm(l.z), Math.round(l.dx * 100), Math.round(l.dz * 100)]),
 };
 

@@ -44,6 +44,10 @@ ui.arms.value = '1';
 ui.head.value = '2';
 
 const state = { x: 0, frozen: false, swinging: false, trailing: false, time: 0 };
+/** A row of monsters wearing every hat, for checking the fit side by side. */
+let row: MonsterModel[] = [];
+let rowFocus = false;
+let focusIndex = -1; // -1 = the whole row, else one monster of it, up close
 
 function build(): BuildIds {
   return { body: Number(ui.body.value), legs: Number(ui.legs.value), arms: Number(ui.arms.value), head: Number(ui.head.value) };
@@ -70,12 +74,18 @@ function frame(now: number): void {
     model.setBuild(build());
     model.update({ x: state.x, y: 1, z: 0, qx: 0, qy: 0, qz: 0, qw: 1, speed, swingPole: state.swinging ? 1 : -1, trailing: state.trailing }, dt, state.time);
     model.root.position.set(0, 1, 0); // the model runs on the spot
+    row.forEach((m, i) => {
+      m.update({ x: (i - 3) * 2.7, y: 1, z: 0, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, swingPole: -1, trailing: false }, dt, state.time);
+      m.root.position.set((i - 3) * 2.7, 1, 0);
+    });
   }
   const az = (Number(ui.az.value) * Math.PI) / 180;
   const el = (Number(ui.el.value) * Math.PI) / 180;
-  const r = 9.5;
-  camera.position.set(Math.sin(az) * Math.cos(el) * r, 1 + Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r);
-  camera.lookAt(0, 1.1, 0);
+  const r = rowFocus ? (focusIndex >= 0 ? 4.2 : 15) : 9.5;
+  const lookY = rowFocus ? (focusIndex >= 0 ? 2.75 : 3.1) : 1.1;
+  const lookX = focusIndex >= 0 ? (focusIndex - 3) * 2.7 : 0;
+  camera.position.set(lookX + Math.sin(az) * Math.cos(el) * r, lookY + Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r);
+  camera.lookAt(lookX, lookY, 0);
   renderer.render(scene, camera);
   (document.getElementById('info') as HTMLElement).textContent = `${model.triangles()} triangles`;
   requestAnimationFrame(frame);
@@ -106,6 +116,26 @@ requestAnimationFrame(frame);
   },
   trail(on: boolean): void {
     state.trailing = on;
+  },
+  /** Seven monsters side by side, one per hat (none, then the six hats), on the given body and head. */
+  hats(body: number, head: number): void {
+    for (const m of row) scene.remove(m.root);
+    row = [];
+    for (let hat = 0; hat < 7; hat += 1) {
+      const m = new MonsterModel(0x6fbf5a);
+      m.setBuild({ body, legs: 0, arms: 0, head }, false);
+      m.setStyle({ tint: 0, hat });
+      scene.add(m.root);
+      row.push(m);
+    }
+    model.root.visible = false;
+    rowFocus = true;
+  },
+  focus(index: number): void {
+    focusIndex = index;
+  },
+  style(tint: number, hat: number): void {
+    model.setStyle({ tint, hat });
   },
   hit(strength = 1): void {
     model.hit(strength);

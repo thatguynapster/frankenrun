@@ -2,7 +2,9 @@
 // Presentation only: it reads what the renderer already knows (position, speed, build) and never touches the sim.
 
 import * as THREE from 'three';
-import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS, baseHead, clampIndex, meshes, torsoMeshes, type BodyDef, type LegDef, type Motion, type Rig } from './parts.js';
+import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS, MATERIALS, baseHead, clampIndex, meshes, torsoMeshes, type BodyDef, type LegDef, type Motion, type Rig } from './parts.js';
+import { createHat, type HatModel } from './hats.js';
+import { DEFAULT_STYLE, TINTS, type Style } from './style.js';
 
 export interface BuildIds {
   readonly body: number;
@@ -69,6 +71,10 @@ export class MonsterModel {
   private lastZ = 0;
   private lastYaw = 0;
   private started = false;
+  private style: Style = DEFAULT_STYLE;
+  private hat: HatModel | undefined;
+  /** This monster's own copy of the body material, so its tint never touches anyone else. */
+  private readonly litTint = (MATERIALS.lit as THREE.MeshLambertMaterial).clone();
 
   /** How far this body and legs combination sinks below the ground at rest (some feet reach lower than the chassis allows). */
   private static readonly liftCache = new Map<string, number>();
@@ -132,6 +138,104 @@ export class MonsterModel {
       if (popIn && !bodyChanged && next.head !== 0) this.pop.head = 0;
     }
     this.current = next;
+    this.applyTint();
+    this.placeHat();
+  }
+
+  /** Chooses the colour tint and hat. Cheap to call every frame: it does nothing when the style has not changed. */
+  setStyle(style: Style): void {
+    if (style.tint === this.style.tint && style.hat === this.style.hat) return;
+    const hatChanged = style.hat !== this.style.hat;
+    this.style = style;
+    this.applyTint();
+    if (hatChanged) this.placeHat();
+  }
+
+  /** Paints every body-coloured piece with the tint (hats and the player-colour sash keep their own colours). */
+  private applyTint(): void {
+    this.litTint.color.set(TINTS[this.style.tint]?.color ?? 0xffffff);
+    this.root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.userData['noTint'] === true) return;
+      const base = (mesh.userData['baseMaterial'] as THREE.Material | undefined) ?? mesh.material;
+      if (base !== MATERIALS.lit) return;
+      mesh.userData['baseMaterial'] = base;
+      mesh.material = this.litTint;
+    });
+  }
+
+  /**
+   * Where a hat sits and how big it is for the head underneath. Heads are round, so a hat's base goes a little way into
+   * the head, to the depth where the head is as wide as the hat's brim: that makes it sit flush instead of floating.
+   * (Numbers come from each head's shape in parts.ts: its top, and how wide it is just below the top.)
+   */
+  private hatFit(): { y: number; z: number; scale: number } {
+    if (this.current.head === 2) return { y: 0.6, z: 0.05, scale: 0.86 }; // pumpkin
+    if (this.current.head === 1) return { y: 0.8, z: 0.02, scale: 1 }; // slime cap
+    return this.body.id === 0 ? { y: 0.5, z: 0.06, scale: 1 } : { y: 0.43, z: 0.05, scale: 0.8 };
+  }
+
+  /**
+   * Height of the head's surface at (x, z) in the head pivot's space: the highest point of any head triangle above that
+   * spot (the flame of the Jack-o'-Lantern, which is not part of the head, is left out).
+   */
+  private surfaceY(x: number, z: number): number | undefined {
+    let best: number | undefined;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    this.headPivot.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.userData['noTint'] === true || mesh.material === MATERIALS.flame || mesh.material === MATERIALS.glow) return;
+      const pos = mesh.geometry.getAttribute('position');
+      for (let i = 0; i + 2 < pos.count; i += 3) {
+        a.fromBufferAttribute(pos, i);
+        b.fromBufferAttribute(pos, i + 1);
+        c.fromBufferAttribute(pos, i + 2);
+        for (const v of [a, b, c]) this.headPivot.worldToLocal(mesh.localToWorld(v));
+        const d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+        if (Math.abs(d) < 1e-9) continue;
+        const l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d;
+        const l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d;
+        const l3 = 1 - l1 - l2;
+        if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+        const y = l1 * a.y + l2 * b.y + l3 * c.y;
+        if (best === undefined || y > best) best = y;
+      }
+    });
+    return best;
+  }
+
+  /** The Jack-o'-Lantern's flame would poke through a hat, so it is put out while one is worn. */
+  private updateFlame(): void {
+    const show = this.style.hat === 0;
+    this.headPivot.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.material === MATERIALS.flame) mesh.visible = show;
+    });
+  }
+
+  /** Puts the hat on: lowered until the points of its base that should touch the head do. */
+  private placeHat(): void {
+    this.updateFlame();
+    if (this.hat) this.headPivot.remove(this.hat.root);
+    this.hat = createHat(this.style.hat);
+    if (!this.hat) return;
+    const fit = this.hatFit();
+    this.hat.root.scale.setScalar(fit.scale);
+    this.hat.root.position.set(0, fit.y, fit.z);
+    // measure at rest: the head pivot with no nod, and the head parts at their scale
+    this.headPivot.rotation.set(0, 0, 0);
+    this.root.updateMatrixWorld(true);
+    const heights: number[] = [];
+    for (const [ax, az] of this.hat.anchors) {
+      const y = this.surfaceY(ax * fit.scale, az * fit.scale + fit.z);
+      if (y !== undefined) heights.push(y);
+    }
+    if (heights.length > 0) {
+      heights.sort((p, q) => p - q);
+      const middle = heights[Math.floor(heights.length / 2)]!;
+      this.hat.root.position.y = middle - 0.02 + this.hat.lift * fit.scale;
+    }
+    this.headPivot.add(this.hat.root);
   }
 
   private buildBody(def: BodyDef): void {
@@ -202,6 +306,7 @@ export class MonsterModel {
     this.torso.scale.set(ts, ts * breathe, ts);
     this.headPivot.rotation.set(-lean * 0.75 + Math.sin(this.phase * 2) * 0.05 * amp + Math.sin(time * 0.9) * 0.03, -Math.sin(this.phase) * 0.08 * amp, 0);
 
+    this.hat?.animate(time);
     this.legs?.animate(motion);
     this.arms?.animate(motion);
     this.head?.animate(motion);
