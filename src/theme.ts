@@ -1,10 +1,11 @@
 export const theme = {
-  background: '#0b1020',
-  surface: '#16213e',
-  primary: '#6fbf5a',
+  // Monster Mash: plum-black night, pumpkin orange as the loud accent, witch purple in support, bone-white text.
+  background: '#0d0716',
+  surface: '#1b1033',
+  primary: '#ff8a1f',
   secondary: '#9a5abf',
-  text: '#ffffff',
-  textMuted: 'rgba(255, 255, 255, 0.7)',
+  text: '#f3ecd2',
+  textMuted: 'rgba(243, 236, 210, 0.72)',
 };
 
 export type Theme = typeof theme;

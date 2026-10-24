@@ -3,7 +3,7 @@ import type { GameProjection, PlayerView } from '../sim/game.js';
 import type { MapData } from '../sim/mapdata.js';
 import { getPreparedMap, type PreparedMap } from '../sim/world.js';
 import { CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
-import { MonsterModel, createPartProp, type PartSlot } from './monsters/MonsterModel.js';
+import { MonsterModel, createPartProp, type BuildIds, type PartSlot } from './monsters/MonsterModel.js';
 import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
 import { makeIcons } from './partIcons.js';
 import { buildCity, cutaway } from './city.js';
@@ -52,6 +52,8 @@ export class RaceView {
   private shakeLeft = 0;
   private shakeFor = 0.3;
   private shakeAmp = 0;
+  /** Settings: off means no camera shake at all. */
+  shakeEnabled = true;
   /** How far the player has turned their own monster on the stage (drag to rotate), and when they last touched it. */
   private lobbyYaw = 0;
   private lobbyTouchedAt = -10;
@@ -75,6 +77,9 @@ export class RaceView {
   private prep: PreparedMap | undefined;
   private routePts: { x: number; z: number }[] = [];
   private routeCp: number[] = [];
+  private routeLen: number[] = [];
+  private flyS = 0;
+  private worldMapId: string | undefined;
   private lanternMesh: THREE.Mesh | undefined;
   private lanternIndex = 0;
   private lanternSignature = '';
@@ -156,6 +161,9 @@ export class RaceView {
     this.applyTheme(themeFor(map.id));
     this.anchors = map.anchors.map((a) => ({ x: a.x / 10, z: a.z / 10 }));
     this.prep = getPreparedMap(map.id);
+    this.worldMapId = map.id;
+    this.routeLen = [];
+    this.flyS = 0;
     this.setRoute(map);
     this.clearColliderLines();
 
@@ -699,6 +707,7 @@ export class RaceView {
 
   /** Camera shake: a short, small jolt (intensity in metres, duration in seconds). A bigger jolt replaces a smaller one. */
   shake(intensity: number, seconds = 0.3): void {
+    if (!this.shakeEnabled) return;
     if (intensity * 1 < this.shakeAmp * (this.shakeLeft / this.shakeFor)) return;
     this.shakeAmp = intensity;
     this.shakeFor = seconds;
@@ -817,6 +826,88 @@ export class RaceView {
     this.camera.position.set(0, STAGE_Y + 3.2 + (back - 1) * 1.5, 9.2 * back);
     this.camera.lookAt(0, STAGE_Y + 2.0, 0);
     this.camera.updateMatrixWorld();
+  }
+
+  /** Which map the race world currently holds (the title's flyover shows it). */
+  get mapId(): string | undefined {
+    return this.worldMapId;
+  }
+
+  /**
+   * The menu screens' own scene: the player's monster on the lab stage, or, while a route is being picked,
+   * a slow flyover of that route's streets. Nothing here reads a game frame.
+   */
+  renderTitle(build: BuildIds, style: Style, dt: number, flyover: boolean): void {
+    while (this.cars.length < 1) this.cars.push(this.makeCar(this.cars.length));
+    this.updateDebris(dt);
+    this.lobbyLabelList = [];
+    this.cars.forEach((rig, i) => {
+      rig.rope.visible = false;
+      if (i > 0 || flyover) rig.model.root.visible = false;
+    });
+    if (flyover && this.worldGroup !== undefined && this.routePts.length > 1) {
+      this.setLobbyMode(false);
+      for (const p of this.pickupPool) p.group.visible = false;
+      for (const sl of this.slickPool) sl.visible = false;
+      for (const b of this.blobPool) b.visible = false;
+      if (this.lanternMesh) this.lanternMesh.visible = false;
+      this.renderFlyover(dt);
+    } else {
+      this.setLobbyMode(true);
+      this.renderTitleStage(build, style, dt);
+    }
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private renderTitleStage(build: BuildIds, style: Style, dt: number): void {
+    const rig = this.cars[0]!;
+    const spot = stageSpot(0);
+    const pose = { x: spot.x, y: FLOOR_Y + 1, z: spot.z, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, swingPole: -1, trailing: false };
+    this.lobbyTime += dt;
+    this.lobbyYaw += 0.4 * dt;
+    rig.model.root.visible = true;
+    rig.model.setBuild(build);
+    rig.model.setStyle(style);
+    rig.model.update(pose, dt, this.lobbyTime);
+    rig.model.root.rotation.y = spot.yaw + this.lobbyYaw;
+    this.lobbyStage.setSpots([{ spot, ready: false }]);
+    this.lobbyStage.update(this.lobbyTime);
+    // The menu column sits in the middle, so on wide screens the monster stands to its left; on tall ones it stays high.
+    const w = Math.max(1, this.container.clientWidth), h = Math.max(1, this.container.clientHeight);
+    if (w / h >= 1.2) this.camera.setViewOffset(w, h, w * 0.34, -h * 0.06, w, h);
+    else this.camera.setViewOffset(w, h, 0, h * 0.2, w, h);
+    const back = Math.max(1, Math.min(2, 1.1 / (w / h))) * (w / h >= 1.2 ? 1 : 0.7);
+    this.camera.position.set(0, STAGE_Y + 3.2 + (back - 1) * 1.5, 9.2 * back);
+    this.camera.lookAt(0, STAGE_Y + 2.0, 0);
+    this.camera.updateMatrixWorld();
+  }
+
+  /** A slow aerial drift along the route's centre line, looping. */
+  private renderFlyover(dt: number): void {
+    const pts = this.routePts;
+    if (this.routeLen.length !== pts.length) {
+      this.routeLen = [0];
+      for (let i = 1; i < pts.length; i += 1) this.routeLen.push(this.routeLen[i - 1]! + Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.z - pts[i - 1]!.z));
+    }
+    const total = this.routeLen[this.routeLen.length - 1]!;
+    if (total < 1) return;
+    this.flyS = (this.flyS + 11 * dt) % total;
+    const at = (s: number): { x: number; z: number } => {
+      const d = ((s % total) + total) % total;
+      let i = 1;
+      while (i < this.routeLen.length - 1 && this.routeLen[i]! < d) i += 1;
+      const a = pts[i - 1]!, b = pts[i]!;
+      const span = Math.max(1e-6, this.routeLen[i]! - this.routeLen[i - 1]!);
+      const k = Math.min(1, Math.max(0, (d - this.routeLen[i - 1]!) / span));
+      return { x: a.x + (b.x - a.x) * k, z: a.z + (b.z - a.z) * k };
+    };
+    const behind = at(this.flyS - 16), ahead = at(this.flyS + 34);
+    this.camera.clearViewOffset();
+    this.camera.position.set(behind.x, 20, behind.z);
+    this.camera.lookAt(ahead.x, 1, ahead.z);
+    this.camera.updateMatrixWorld();
+    this.atmosphere.update(this.camera, this.lobbyTime, true);
+    this.lobbyTime += dt;
   }
 
   /** Turns the local monster on the lobby stage by a drag of `dx` pixels (a full screen width is about a turn and a half). */

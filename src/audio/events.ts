@@ -121,6 +121,8 @@ export class AudioEvents {
       // Your own tentacle and slime sounds play the moment you press the button (see Game); others' follow the state.
       if (p.slot !== localSlot && p.grabbing >= 0 && !m.grabbing) events.push({ id: 'steal', slot: p.slot, gain: 0.7 }); // a claw snaps shut
       if (p.slot !== localSlot && p.swingPole >= 0 && !m.swinging) events.push({ id: 'tentacle', slot: p.slot });
+      // The rope hits its pole: a short, high, hard thud (for your own monster too, a moment after the whip).
+      if (p.swingPole >= 0 && !m.swinging) events.push({ id: 'impact', slot: p.slot, gain: 0.55, rate: 1.7 });
       if (p.slot !== localSlot && p.trailing && !m.trailing) events.push({ id: 'slime', slot: p.slot });
       // Hopper Haunches: a roar as it leaps, a heavy stomp as it lands.
       if (p.airborne && !m.airborne) events.push({ id: 'growl', slot: p.slot, gain: 0.9 });

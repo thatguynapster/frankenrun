@@ -31,7 +31,7 @@ export class LobbyStage {
   readonly group = new THREE.Group();
   readonly lights: THREE.Object3D[] = [];
   private readonly rings: THREE.Mesh[] = [];
-  private readonly ringMats = [glow(0x4d5a99), glow(0x6fe07a)];
+  private readonly ringMats = [glow(0x6a4a9a), glow(0x8cff3a)];
   private readonly motes: THREE.Points;
   private readonly orbs: THREE.Mesh[] = [];
 
@@ -39,37 +39,37 @@ export class LobbyStage {
     const g = this.group;
     g.position.set(0, 0, 0);
     // floor: a round platform with a glowing rim
-    const floor = new THREE.Mesh(new THREE.CylinderGeometry(10, 10.6, 0.4, 36), lambert(0x2b2750));
+    const floor = new THREE.Mesh(new THREE.CylinderGeometry(10, 10.6, 0.4, 36), lambert(0x2e1a47));
     floor.position.y = STAGE_Y;
     g.add(floor);
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(10.2, 0.12, 4, 48), glow(0x6fe07a, 0.9));
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(10.2, 0.12, 4, 48), glow(0xff8a1f, 0.9));
     rim.rotation.x = Math.PI / 2;
     rim.position.y = FLOOR_Y + 0.02;
     g.add(rim);
     // back wall: tall dark panels with glowing seams, like a lab's riveted wall
     for (let i = -4; i <= 4; i += 1) {
       const a = i * 0.27;
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(2.3, 9, 0.5), lambert(i % 2 === 0 ? 0x211e40 : 0x282450));
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(2.3, 9, 0.5), lambert(i % 2 === 0 ? 0x24153a : 0x2c1a48));
       panel.position.set(Math.sin(a) * 13, STAGE_Y + 4.4, -Math.cos(a) * 13);
       panel.rotation.y = -a;
       g.add(panel);
-      const seam = new THREE.Mesh(new THREE.BoxGeometry(0.1, 8, 0.1), glow(0x3ed0b0));
+      const seam = new THREE.Mesh(new THREE.BoxGeometry(0.1, 8, 0.1), glow(0xb06aff));
       seam.position.set(Math.sin(a + 0.135) * 12.7, STAGE_Y + 4.4, -Math.cos(a + 0.135) * 12.7);
       seam.rotation.y = -a;
       g.add(seam);
     }
     // two tesla coils with glowing orbs
     for (const side of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.5, 5.2, 7), lambert(0x4a4570));
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.5, 5.2, 7), lambert(0x4e3a6a));
       post.position.set(side * 8.4, STAGE_Y + 2.7, -5.2);
       g.add(post);
       for (let r = 0; r < 3; r += 1) {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62 - r * 0.1, 0.08, 4, 10), lambert(0x6f6aa0));
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62 - r * 0.1, 0.08, 4, 10), lambert(0x8a6ab0));
         ring.rotation.x = Math.PI / 2;
         ring.position.set(side * 8.4, STAGE_Y + 3.4 + r * 0.55, -5.2);
         g.add(ring);
       }
-      const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), glow(0x9dffcf));
+      const orb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), glow(0xd9a6ff));
       orb.position.set(side * 8.4, STAGE_Y + 5.6, -5.2);
       g.add(orb);
       this.orbs.push(orb);
@@ -88,11 +88,11 @@ export class LobbyStage {
     sheet.position.set(-7.6, STAGE_Y + 1.95, 1.8);
     g.add(sheet);
     // hanging lamp over the local player's spot, with a faint beam
-    const lamp = new THREE.Mesh(new THREE.ConeGeometry(1.1, 0.9, 8, 1, true), lambert(0x3a3560));
+    const lamp = new THREE.Mesh(new THREE.ConeGeometry(1.1, 0.9, 8, 1, true), lambert(0x40285e));
     lamp.position.set(0, STAGE_Y + 10, 0.8);
     (lamp.material as THREE.MeshLambertMaterial).side = THREE.DoubleSide;
     g.add(lamp);
-    const beam = new THREE.Mesh(new THREE.ConeGeometry(3.6, 9.6, 14, 1, true), glow(0xfff2c2, 0.07));
+    const beam = new THREE.Mesh(new THREE.ConeGeometry(3.6, 9.6, 14, 1, true), glow(0xffd9a0, 0.08));
     beam.position.set(0, STAGE_Y + 5.2, 0.8);
     (beam.material as THREE.MeshBasicMaterial).side = THREE.DoubleSide;
     g.add(beam);
@@ -113,11 +113,11 @@ export class LobbyStage {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
-    this.motes = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xb6ff8a, size: 0.14, transparent: true, opacity: 0.7, depthWrite: false }));
+    this.motes = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffb347, size: 0.14, transparent: true, opacity: 0.7, depthWrite: false }));
     this.motes.frustumCulled = false;
     g.add(this.motes);
     // a soft green light from the coils
-    const coil = new THREE.PointLight(0x6fffc0, 40, 26, 1.6);
+    const coil = new THREE.PointLight(0xb06aff, 40, 26, 1.6);
     coil.position.set(0, STAGE_Y + 6, -3);
     g.add(coil);
     this.lights.push(coil);

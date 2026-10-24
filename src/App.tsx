@@ -6,7 +6,9 @@ import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import { Game, type Graphics, type UiState } from './Game';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS } from './sim/parts';
 import { ARM_CLAWS, ARM_TENTACLES, HEAD_HUMP, HEAD_SLIME, LEGS_HOPPER, buildStats, lobbyStatus, type Build, type GameProjection } from './sim/game';
+import { Logo, PumpkinSpinner } from './components/Logo';
 import './style.css';
+import './mash.css';
 
 const TICK = 30;
 
@@ -42,7 +44,7 @@ function App() {
   const game = gameRef.current;
   return (
     <div
-      className="app-container"
+      className={`app-container ${ui?.leftHanded ? 'lefty' : ''}`}
       onClickCapture={(e) => {
         // Every button press gets the same soft click.
         if (game && (e.target as HTMLElement).closest('button')) game.audio.playUi('click');
@@ -93,7 +95,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
             This week
           </button>
         </div>
-        {b.loading && <p className="muted">Loading...</p>}
+        {b.loading && <PumpkinSpinner />}
         {!b.loading && b.data === null && <p className="muted">The leaderboard is not available right now.</p>}
         {b.data !== null && b.data.entries.length === 0 && <p className="muted">No times yet. Be the first to finish this route!</p>}
         {b.data !== null && b.data.entries.length > 0 && (
@@ -116,7 +118,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
   }
   if (ui.screen === 'title' && ui.picking !== null) {
     return (
-      <div className="panel center routes">
+      <div className="panel center routes fly">
         <h1 className="title small">{ui.picking === 'host' ? 'Pick the route for your race' : 'Pick a route to practise'}</h1>
         {ui.picking === 'practice' && (
           <div className="bot-skill">
@@ -131,10 +133,16 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
       </div>
     );
   }
+  if (ui.screen === 'title' && ui.menuOpen) return <MenuPanel game={game} ui={ui} fromTitle />;
   if (ui.screen === 'title') {
     return (
-      <div className="panel center">
-        <h1 className="title">FRANKENRUN</h1>
+      <div className="panel center home">
+        <button className="btn corner" onClick={() => game.toggleMenu()}>
+          Menu
+        </button>
+        <h1 className="logo-wrap">
+          <Logo />
+        </h1>
         <p className="muted">Stitch a monster. Race it. Steal the win.</p>
         {ui.titleNote && <p className="muted small note">{ui.titleNote}</p>}
         <button className="btn primary" onClick={() => void game.quick()}>
@@ -171,6 +179,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
   if (ui.screen === 'connecting') {
     return (
       <div className="panel center">
+        <PumpkinSpinner />
         <p className="title small">{ui.connectNote ? 'Reconnecting...' : 'Connecting...'}</p>
         {ui.connectNote && <p className="muted small">{ui.connectNote}</p>}
       </div>
@@ -212,11 +221,11 @@ const GRAPHICS_CHOICES: readonly { value: Graphics; label: string; note: string 
 ];
 
 /** Esc (or the Menu button): quick settings. The game does not pause online, so the monster just stops responding to input. */
-function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
+function MenuPanel({ game, ui, fromTitle = false }: { game: Game; ui: UiState; fromTitle?: boolean }) {
   return (
     <div className="panel center menu">
       <h2 className="title small">Menu</h2>
-      {ui.online && <p className="muted small">The race keeps going while this is open.</p>}
+      {!fromTitle && ui.online && <p className="muted small">The race keeps going while this is open.</p>}
       <div className="menu-section">
         <b>Graphics quality</b>
         <div className="chips">
@@ -239,18 +248,43 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
           </button>
         </div>
         <label className="slider">
-          <span>Volume</span>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.round(ui.audio.volume * 100)}
-            onChange={(e) => game.setAudio({ volume: Number(e.target.value) / 100 })}
-            aria-label="Volume"
-          />
+          <span>Master</span>
+          <input type="range" min={0} max={100} step={1} value={Math.round(ui.audio.volume * 100)} onChange={(e) => game.setAudio({ volume: Number(e.target.value) / 100 })} aria-label="Master volume" />
           <em>{Math.round(ui.audio.volume * 100)}%</em>
         </label>
+        <label className="slider">
+          <span>Effects</span>
+          <input type="range" min={0} max={100} step={1} value={Math.round(ui.audio.sfxVolume * 100)} onChange={(e) => game.setAudio({ sfxVolume: Number(e.target.value) / 100 })} aria-label="Effects volume" />
+          <em>{Math.round(ui.audio.sfxVolume * 100)}%</em>
+        </label>
+        <label className="slider">
+          <span>Music</span>
+          <input type="range" min={0} max={100} step={1} value={Math.round(ui.audio.musicVolume * 100)} onChange={(e) => game.setAudio({ musicVolume: Number(e.target.value) / 100 })} aria-label="Music volume" />
+          <em>{Math.round(ui.audio.musicVolume * 100)}%</em>
+        </label>
+      </div>
+      <div className="menu-section">
+        <b>Comfort</b>
+        <div className="chips">
+          <button className={`chip ${ui.cameraShake ? 'on' : ''}`} onClick={() => game.setCameraShake(!ui.cameraShake)}>
+            Camera shake: {ui.cameraShake ? 'on' : 'off'}
+          </button>
+          <button className={`chip ${ui.minimap ? 'on' : ''}`} onClick={() => game.setMinimap(!ui.minimap)}>
+            Minimap: {ui.minimap ? 'on' : 'off'}
+          </button>
+          {ui.touch && (
+            <button className={`chip ${ui.leftHanded ? 'on' : ''}`} onClick={() => game.setLeftHanded(!ui.leftHanded)}>
+              Left-handed: {ui.leftHanded ? 'on' : 'off'}
+            </button>
+          )}
+        </div>
+        {ui.touch && (
+          <label className="slider">
+            <span>Steering</span>
+            <input type="range" min={60} max={160} step={5} value={Math.round(ui.steerSensitivity * 100)} onChange={(e) => game.setSteerSensitivity(Number(e.target.value) / 100)} aria-label="Steering distance" />
+            <em>{ui.steerSensitivity < 0.9 ? 'quick' : ui.steerSensitivity > 1.1 ? 'relaxed' : 'normal'}</em>
+          </label>
+        )}
       </div>
       <div className="menu-section">
         <b>On screen</b>
@@ -274,11 +308,13 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
       </div>
       <div className="row">
         <button className="btn primary" onClick={() => game.toggleMenu()}>
-          Resume
+          {fromTitle ? 'Back' : 'Resume'}
         </button>
-        <button className="btn" onClick={() => game.leave()}>
-          Leave game
-        </button>
+        {!fromTitle && (
+          <button className="btn" onClick={() => game.leave()}>
+            Leave game
+          </button>
+        )}
       </div>
     </div>
   );
@@ -286,8 +322,8 @@ function MenuPanel({ game, ui }: { game: Game; ui: UiState }) {
 
 /** The control keys for the scheme in use. */
 function keysHelp(ui: UiState): string {
-  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities · swipe Slime up to throw it ahead, down to throw it behind · hold Reset to return to the last checkpoint';
-  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold R to reset · Space to get up if you fall over · Esc menu';
+  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities (hold Leap to charge a jump) · swipe Slime up to throw it ahead, down to throw it behind · hold Reset to return to the last checkpoint';
+  return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold L to charge a leap, let go to jump · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
 
@@ -441,6 +477,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   if (!frame || !me) {
     return (
       <div className="panel center">
+        <PumpkinSpinner />
         <p className="title small">Loading...</p>
       </div>
     );
@@ -697,10 +734,13 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
         )}
         <div className="abilities">
           <AbilityButton
+            slot="arms"
             label={me.build.arms === ARM_CLAWS ? 'Claws' : 'Tentacles'}
             hint="J"
+            icon={ui.icons[`arms:${me.build.arms}`]}
             on={me.build.arms === ARM_TENTACLES || me.build.arms === ARM_CLAWS}
             cd={me.armsCooldown}
+            cdTotal={ARM_PARTS[me.build.arms]?.cooldownTicks ?? 0}
             active={me.swingPole >= 0 || me.grabbing >= 0}
             onDown={() => game.controls.setTouchArms(true)}
             onUp={() => game.controls.setTouchArms(false)}
@@ -708,10 +748,14 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           />
           {me.build.legs === LEGS_HOPPER && (
             <AbilityButton
+              slot="legs"
               label="Leap"
-              hint={ui.touch ? 'hold' : 'hold L'}
+              hint={ui.touch ? 'hold' : 'L'}
+              icon={ui.icons[`legs:${me.build.legs}`]}
               on
               cd={me.hopCooldown}
+              cdTotal={LEG_PARTS[me.build.legs]?.hop?.cooldownTicks ?? 0}
+              charge={me.hopCharge}
               active={me.hopCharge > 0 || me.airborne}
               onDown={() => game.controls.setTouchLegs(true)}
               onUp={() => game.controls.setTouchLegs(false)}
@@ -719,9 +763,11 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             />
           )}
           <SlimeButton
-            hint={ui.touch ? 'swipe' : 'K / I'}
+            hint={ui.touch ? 'swipe' : 'K'}
+            icon={ui.icons[`head:${me.build.head}`]}
             on={me.build.head === HEAD_SLIME}
             cd={me.headCooldown}
+            cdTotal={HEAD_PARTS[me.build.head]?.cooldownTicks ?? 0}
             active={me.trailing}
             onThrow={(forward) => game.controls.pulseSlime(forward)}
             secs={secs}
@@ -732,10 +778,11 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             onPointerUp={() => game.controls.setTouchReset(false)}
             onPointerLeave={() => game.controls.setTouchReset(false)}
           >
-            Reset
+            <span className="ab-glyph">↺</span>
+            <b className="ab-name">Reset</b>
           </button>
         </div>
-        <SteerZone game={game} touch={ui.touch} />
+        <SteerZone game={game} touch={ui.touch} sensitivity={ui.steerSensitivity} />
         <button className="gfx" onClick={() => game.toggleMenu()}>
           Menu (Esc)
         </button>
@@ -769,27 +816,42 @@ function StatBar({ label, value, max, text }: { label: string; value: number; ma
   );
 }
 
+type AbilitySlot = 'legs' | 'arms' | 'head';
+
+/** The round face of an ability button: the part's picture, a sweep that shrinks as the cooldown runs out, and its label. */
+function AbilityFace(props: { slot: AbilitySlot; label: string; hint: string; icon: string | undefined; on: boolean; cd: number; cdTotal: number; charge?: number; secs: (t: number) => string }) {
+  const { label, hint, icon, on, cd, cdTotal, charge = 0, secs } = props;
+  const left = cdTotal > 0 ? Math.min(1, cd / cdTotal) : cd > 0 ? 1 : 0;
+  return (
+    <>
+      {icon ? <img className="ab-icon" src={icon} alt="" draggable={false} /> : <span className="ab-glyph">?</span>}
+      <i className="ab-sweep" style={{ ['--left' as string]: left }} />
+      {charge > 0 && <i className="ab-charge" style={{ ['--charge' as string]: charge }} />}
+      {cd > 0 && on && <span className="ab-time">{secs(cd)}</span>}
+      <b className="ab-name">{on ? label : 'Empty'}</b>
+      <em className="ab-key">{hint}</em>
+    </>
+  );
+}
+
 function AbilityButton(props: {
+  slot: AbilitySlot;
   label: string;
   hint: string;
+  icon: string | undefined;
   on: boolean;
   cd: number;
+  cdTotal: number;
+  charge?: number;
   active: boolean;
   onDown: () => void;
   onUp: () => void;
   secs: (t: number) => string;
 }) {
-  const { label, hint, on, cd, active, onDown, onUp, secs } = props;
+  const { slot, active, on, cd, onDown, onUp } = props;
   return (
-    <button
-      className={`ability ${on ? '' : 'off'} ${active ? 'active' : ''} ${cd > 0 ? 'cooling' : ''}`}
-      disabled={!on}
-      onPointerDown={onDown}
-      onPointerUp={onUp}
-      onPointerLeave={onUp}
-    >
-      <b>{label}</b>
-      <small>{!on ? 'empty' : cd > 0 ? `${secs(cd)}s` : hint}</small>
+    <button className={`ability ${slot} ${on ? '' : 'off'} ${active ? 'active' : ''} ${cd > 0 ? 'cooling' : ''}`} disabled={!on} onPointerDown={onDown} onPointerUp={onUp} onPointerLeave={onUp}>
+      <AbilityFace {...props} />
     </button>
   );
 }
@@ -798,12 +860,12 @@ function AbilityButton(props: {
  * The slime button. A tap throws the slime behind you; swiping the button up throws it ahead, swiping it down throws it
  * behind. The throw happens when the swipe passes a short distance, or when the finger lifts after a tap.
  */
-function SlimeButton(props: { hint: string; on: boolean; cd: number; active: boolean; onThrow: (forward: boolean) => void; secs: (t: number) => string }) {
-  const { hint, on, cd, active, onThrow, secs } = props;
+function SlimeButton(props: { hint: string; icon: string | undefined; on: boolean; cd: number; cdTotal: number; active: boolean; onThrow: (forward: boolean) => void; secs: (t: number) => string }) {
+  const { on, cd, active, onThrow } = props;
   const start = useRef<{ y: number; done: boolean } | null>(null);
   return (
     <button
-      className={`ability ${on ? '' : 'off'} ${active ? 'active' : ''} ${cd > 0 ? 'cooling' : ''}`}
+      className={`ability head ${on ? '' : 'off'} ${active ? 'active' : ''} ${cd > 0 ? 'cooling' : ''}`}
       disabled={!on}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -827,13 +889,12 @@ function SlimeButton(props: { hint: string; on: boolean; cd: number; active: boo
         start.current = null;
       }}
     >
-      <b>Slime</b>
-      <small>{!on ? 'empty' : cd > 0 ? `${secs(cd)}s` : hint}</small>
+      <AbilityFace slot="head" label="Slime" {...props} />
     </button>
   );
 }
 
-function SteerZone({ game, touch }: { game: Game; touch: boolean }) {
+function SteerZone({ game, touch, sensitivity }: { game: Game; touch: boolean; sensitivity: number }) {
   const originX = useRef(0);
   const knob = useRef<HTMLDivElement | null>(null);
   const moveKnob = (dx: number) => {
@@ -850,7 +911,7 @@ function SteerZone({ game, touch }: { game: Game; touch: boolean }) {
       }}
       onPointerMove={(e) => {
         if (e.pointerType === 'mouse' || e.buttons === 0) return;
-        const value = (e.clientX - originX.current) / 60;
+        const value = (e.clientX - originX.current) / (60 * sensitivity);
         game.controls.setTouchSteer(value);
         moveKnob(value);
       }}

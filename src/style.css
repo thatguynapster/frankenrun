@@ -247,44 +247,140 @@ body {
   touch-action: none;
 }
 
+/* Ability buttons: a dark round face in the colour of the part's slot, with the part's picture, a sweep that shrinks as the cooldown ends, and a name plate. */
 .ability {
+  --ab: #ffffff;
+  position: relative;
   width: 84px;
   height: 84px;
+  padding: 0;
   border-radius: 50%;
-  border: 3px solid #fff;
-  background: rgba(255, 255, 255, 0.14);
+  border: 3px solid var(--ab);
+  background: radial-gradient(circle at 50% 30%, rgba(70, 44, 104, 0.92), rgba(12, 8, 26, 0.9));
   color: #fff;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  font-size: 12px;
+  touch-action: none;
+  transition: transform 80ms ease-out, box-shadow 120ms ease-out;
 }
 
-.ability small {
-  font-size: 13px;
+.ability.legs { --ab: #ff9a2e; }
+.ability.arms { --ab: #b04cff; }
+.ability.head { --ab: #b6ff3b; }
+
+.ability:active {
+  transform: scale(0.93);
+}
+
+.ab-icon {
+  width: 58px;
+  height: 58px;
+  margin-top: -6px;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7));
+}
+
+.ab-glyph {
+  font-size: 26px;
+  font-weight: 800;
+  margin-top: -6px;
   opacity: 0.85;
 }
 
-.ability.off {
-  opacity: 0.3;
+.ab-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(rgba(6, 4, 16, 0.8) calc(var(--left, 0) * 360deg), transparent 0);
+  pointer-events: none;
 }
 
-.ability.cooling {
-  border-color: #888;
-  color: #bbb;
+.ab-charge {
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ab) calc(var(--charge, 0) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  pointer-events: none;
+}
+
+.ab-time {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin-top: -6px;
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 4px #000;
+  pointer-events: none;
+}
+
+.ab-name {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 3px;
+  background: var(--ab);
+  color: #140a22;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ab-key {
+  position: absolute;
+  top: -7px;
+  right: -5px;
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.82);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+  pointer-events: none;
 }
 
 .ability.active {
-  background: rgba(176, 76, 255, 0.5);
-  border-color: #d9a6ff;
+  box-shadow: 0 0 16px var(--ab), inset 0 0 14px rgba(255, 255, 255, 0.2);
+}
+
+.ability.cooling .ab-icon {
+  opacity: 0.55;
+}
+
+.ability.off {
+  opacity: 0.35;
+  filter: grayscale(0.5);
 }
 
 .ability.reset {
-  width: 56px;
-  height: 56px;
-  font-size: 11px;
+  --ab: #e9e1c9;
+  width: 54px;
+  height: 54px;
+}
+
+.ability.reset .ab-glyph {
+  font-size: 24px;
+  margin-top: -4px;
+}
+
+.ability.reset .ab-name {
+  font-size: 9px;
+  bottom: -8px;
 }
 
 /* Only shown while the monster is lying on its side. */
@@ -499,8 +595,8 @@ body {
 }
 
 .chip.on {
-  border-color: #ffd23b;
-  background: rgba(255, 210, 59, 0.18);
+  border-color: var(--color-primary);
+  background: rgba(111, 191, 90, 0.2);
 }
 
 .picker.legs .chip.on {
@@ -722,8 +818,8 @@ body {
   width: 150px;
   height: 150px;
   border-radius: 50%;
-  border: 3px solid rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.08);
+  border: 3px solid rgba(111, 191, 90, 0.4);
+  background: radial-gradient(circle, rgba(12, 8, 26, 0.5), rgba(12, 8, 26, 0.25));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -734,8 +830,9 @@ body {
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: rgba(255, 210, 59, 0.55);
-  border: 3px solid rgba(255, 210, 59, 0.9);
+  background: rgba(111, 191, 90, 0.5);
+  border: 3px solid var(--color-primary);
+  box-shadow: 0 0 12px rgba(111, 191, 90, 0.5);
   transition: transform 60ms linear;
 }
 
@@ -819,22 +916,22 @@ body {
   height: 22px;
   margin-top: -8px;
   border-radius: 50%;
-  background: #ffd23b;
+  background: var(--color-primary);
   border: 3px solid #fff;
-  box-shadow: 0 0 8px rgba(255, 210, 59, 0.6);
+  box-shadow: 0 0 8px rgba(111, 191, 90, 0.6);
 }
 
 .slider input[type='range']::-moz-range-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #ffd23b;
+  background: var(--color-primary);
   border: 3px solid #fff;
-  box-shadow: 0 0 8px rgba(255, 210, 59, 0.6);
+  box-shadow: 0 0 8px rgba(111, 191, 90, 0.6);
 }
 
 .slider input[type='range']:focus-visible {
-  outline: 2px solid #ffd23b;
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
@@ -1330,4 +1427,29 @@ body {
 
 .part-slot.spare {
   border-color: #d9a441;
+}
+
+/* Left-handed controls: the steering side and the ability buttons swap places (the minimap stays top right). */
+.lefty .abilities {
+  right: auto;
+  left: calc(14px + var(--safe-left));
+  flex-direction: row-reverse;
+}
+
+.lefty .steer-zone {
+  left: auto;
+  right: 0;
+}
+
+.lefty .joystick {
+  left: auto;
+  right: calc(34px + var(--safe-right));
+}
+
+/* Sound sliders in the menu. */
+.menu-section .slider {
+  display: grid;
+  grid-template-columns: 96px 1fr 44px;
+  align-items: center;
+  gap: 10px;
 }

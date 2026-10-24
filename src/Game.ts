@@ -119,6 +119,12 @@ export interface UiState {
   readonly online: boolean;
   /** Show the performance readout on screen. */
   readonly showInfo: boolean;
+  /** Comfort settings (saved on the device). */
+  readonly cameraShake: boolean;
+  readonly minimap: boolean;
+  readonly leftHanded: boolean;
+  /** How far a finger has to drag to steer fully: 0.6 (twitchy) to 1.6 (relaxed); 1 is the default. */
+  readonly steerSensitivity: number;
   /** A phone or tablet: touch controls, chase camera only. */
   readonly touch: boolean;
   readonly audio: AudioSettings;
@@ -182,6 +188,7 @@ export class Game {
   private lastRoom = '';
   private invite: Invite | null = null;
   private picking: 'practice' | 'host' | null = null;
+  private flyLoading = '';
   private routeOffset = 0;
   private lobbyTab: UiState['lobbyTab'] = 'body';
   private board: UiState['board'] = null;
@@ -214,6 +221,10 @@ export class Game {
   /** Ability buttons held on the previous frame, to catch the moment of a press. */
   private prevPress = { arms: false, head: false, reset: false };
   private showInfo = true;
+  private cameraShake = true;
+  private minimap_ = true;
+  private leftHanded = false;
+  private steerSensitivity = 1;
   private aimScreen: { x: number; y: number } | null = null;
   private ownName = '';
   private names = new Map<number, string>();
@@ -285,7 +296,7 @@ export class Game {
     this.audio.setChangeListener(() => this.emit());
     this.watchVisibility();
     this.onKeyDown = (e: KeyboardEvent): void => {
-      if (e.code === 'Escape' && !e.repeat && this.screen === 'play') {
+      if (e.code === 'Escape' && !e.repeat && (this.screen === 'play' || (this.screen === 'title' && this.menuOpen))) {
         e.preventDefault();
         this.toggleMenu();
       }
@@ -412,6 +423,31 @@ export class Game {
     this.emit();
   }
 
+  setCameraShake(on: boolean): void {
+    this.cameraShake = on;
+    this.view.shakeEnabled = on;
+    this.saveSettings();
+    this.emit();
+  }
+
+  setMinimap(on: boolean): void {
+    this.minimap_ = on;
+    this.saveSettings();
+    this.emit();
+  }
+
+  setLeftHanded(on: boolean): void {
+    this.leftHanded = on;
+    this.saveSettings();
+    this.emit();
+  }
+
+  setSteerSensitivity(value: number): void {
+    this.steerSensitivity = Math.max(0.6, Math.min(1.6, value));
+    this.saveSettings();
+    this.emit();
+  }
+
   setColliders(on: boolean): void {
     this.showColliders = on;
     this.emit();
@@ -426,8 +462,13 @@ export class Game {
     try {
       const saved = await RundotGameAPI.deviceCache.getItem(SETTINGS_STORAGE_KEY);
       if (saved) {
-        const raw = JSON.parse(saved) as { showInfo?: unknown };
+        const raw = JSON.parse(saved) as { showInfo?: unknown; cameraShake?: unknown; minimap?: unknown; leftHanded?: unknown; steerSensitivity?: unknown };
         if (typeof raw.showInfo === 'boolean') this.showInfo = raw.showInfo;
+        if (typeof raw.cameraShake === 'boolean') this.cameraShake = raw.cameraShake;
+        if (typeof raw.minimap === 'boolean') this.minimap_ = raw.minimap;
+        if (typeof raw.leftHanded === 'boolean') this.leftHanded = raw.leftHanded;
+        if (typeof raw.steerSensitivity === 'number') this.steerSensitivity = Math.max(0.6, Math.min(1.6, raw.steerSensitivity));
+        this.view.shakeEnabled = this.cameraShake;
         this.emit();
       }
     } catch {
@@ -436,7 +477,7 @@ export class Game {
   }
 
   private saveSettings(): void {
-    RundotGameAPI.deviceCache.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ showInfo: this.showInfo })).catch(() => undefined);
+    RundotGameAPI.deviceCache.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ showInfo: this.showInfo, cameraShake: this.cameraShake, minimap: this.minimap_, leftHanded: this.leftHanded, steerSensitivity: this.steerSensitivity })).catch(() => undefined);
   }
 
   /**
@@ -606,6 +647,10 @@ export class Game {
       menuOpen: this.menuOpen,
       online: this.lastRoom !== '',
       showInfo: this.showInfo,
+      cameraShake: this.cameraShake,
+      minimap: this.minimap_,
+      leftHanded: this.leftHanded,
+      steerSensitivity: this.steerSensitivity,
       touch: this.controls.coarse,
       audio: this.audio.settings,
     };
@@ -801,9 +846,10 @@ export class Game {
     const r0 = performance.now();
     const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
     this.watchLobby(now);
-    this.minimap.draw(frame, this.snapshot?.localSlot ?? 0, this.screen === 'play' && !lobbyNow);
+    this.minimap.draw(frame, this.snapshot?.localSlot ?? 0, this.screen === 'play' && !lobbyNow && this.minimap_);
     this.view.setStyles(this.styleTable());
-    this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
+    if (this.screen === 'play') this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
+    else this.renderTitleScene(dt / 1000);
     this.perfRender += performance.now() - r0;
     this.perfFrames += 1;
     if (dt > this.perfMaxFrame) this.perfMaxFrame = dt;
@@ -880,6 +926,26 @@ export class Game {
 
   setAudio(patch: Partial<AudioSettings>): void {
     this.audio.setSettings(patch);
+  }
+
+  /** The menu screens' own scene: the player's saved monster on the stage, or a flyover of the route being picked. */
+  private renderTitleScene(dt: number): void {
+    const picked = this.screen === 'title' && this.picking !== null ? ROUTES[Math.min(this.routeOffset + 1, ROUTES.length - 1)]?.id : undefined;
+    if (picked !== undefined && picked !== this.map?.id && picked !== this.flyLoading) {
+      this.flyLoading = picked;
+      ensureMap(picked)
+        .then((map) => {
+          if (this.screen !== 'title' || this.picking === null) return;
+          this.map = map;
+          this.view.setMap(map);
+          this.minimap.setMap(map);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          this.flyLoading = '';
+        });
+    }
+    this.view.renderTitle(this.build, this.style, dt, picked !== undefined && this.view.mapId === picked);
   }
 
   /** Shows the map the room is racing on (a joiner learns it from the room, not from the menu). */

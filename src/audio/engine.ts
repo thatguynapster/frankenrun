@@ -13,9 +13,13 @@ export interface AudioSettings {
   readonly music: boolean;
   /** Master volume, 0 (silent) to 1 (full). Set with the slider in the menu. */
   readonly volume: number;
+  /** Separate sliders for the effects and the music, 0 to 1, on top of the master volume. */
+  readonly sfxVolume: number;
+  readonly musicVolume: number;
 }
 
 export const DEFAULT_VOLUME = 0.7;
+const DEFAULT_BUS_VOLUME = 0.85;
 
 /** The slider is linear but loudness is not: squaring it makes the lower half usefully quiet. */
 export function gainForVolume(volume: number): number {
@@ -27,8 +31,44 @@ const MAX_VOICES = 14;
 const MUSIC_FADE_S = 1.2;
 const SOUND_BY_ID = new Map<string, SoundDef>(SOUNDS.map((s) => [s.id, s]));
 
+/**
+ * A music track made to loop without a seam: a fade-out at the end is trimmed away, and the last second is blended into
+ * the first second (equal power), so the end flows straight into the start.
+ */
+export function loopable(ctx: BaseAudioContext, buffer: AudioBuffer): AudioBuffer {
+  const rate = buffer.sampleRate;
+  const win = Math.floor(rate * 0.05);
+  const first = buffer.getChannelData(0);
+  const rmsAt = (start: number): number => {
+    let t = 0;
+    const end = Math.min(first.length, start + win);
+    for (let i = start; i < end; i += 1) t += first[i]! * first[i]!;
+    return Math.sqrt(t / Math.max(1, end - start));
+  };
+  // The usual loudness: the median of the window levels over the track.
+  const levels: number[] = [];
+  for (let s = 0; s + win <= first.length; s += win * 4) levels.push(rmsAt(s));
+  const median = [...levels].sort((a, b) => a - b)[Math.floor(levels.length / 2)] ?? 0;
+  // Trim a fade-out: drop trailing windows that are much quieter than the track usually is.
+  let length = first.length;
+  while (length - win > rate * 5 && rmsAt(length - win) < median * 0.6) length -= win;
+  const fade = Math.min(Math.floor(rate * 1.2), Math.floor(length / 4));
+  const loopLength = length - fade;
+  const out = ctx.createBuffer(buffer.numberOfChannels, loopLength, rate);
+  for (let c = 0; c < buffer.numberOfChannels; c += 1) {
+    const src = buffer.getChannelData(c);
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < loopLength; i += 1) dst[i] = src[i]!;
+    for (let i = 0; i < fade; i += 1) {
+      const t = (i / fade) * (Math.PI / 2);
+      dst[i] = src[i]! * Math.sin(t) + src[loopLength + i]! * Math.cos(t);
+    }
+  }
+  return out;
+}
+
 export class AudioEngine {
-  settings: AudioSettings = { sfx: true, music: true, volume: DEFAULT_VOLUME };
+  settings: AudioSettings = { sfx: true, music: true, volume: DEFAULT_VOLUME, sfxVolume: DEFAULT_BUS_VOLUME, musicVolume: DEFAULT_BUS_VOLUME };
   private ctx: AudioContext | undefined;
   private master: GainNode | undefined;
   private sfxBus: GainNode | undefined;
@@ -97,10 +137,13 @@ export class AudioEngine {
     try {
       const saved = await RundotGameAPI.deviceCache.getItem(STORAGE_KEY);
       if (!saved) return;
-      const raw = JSON.parse(saved) as { sfx?: unknown; music?: unknown; volume?: unknown };
+      const raw = JSON.parse(saved) as { sfx?: unknown; music?: unknown; volume?: unknown; sfxVolume?: unknown; musicVolume?: unknown };
+      const level = (v: unknown): number => (typeof v === 'number' ? Math.max(0, Math.min(1, v)) : DEFAULT_BUS_VOLUME);
       this.settings = {
         sfx: typeof raw.sfx === 'boolean' ? raw.sfx : true,
         music: typeof raw.music === 'boolean' ? raw.music : true,
+        sfxVolume: level(raw.sfxVolume),
+        musicVolume: level(raw.musicVolume),
         // Older builds saved 'low' | 'medium' | 'high'; those map onto the slider.
         volume: typeof raw.volume === 'number' ? Math.max(0, Math.min(1, raw.volume)) : raw.volume === 'low' ? 0.35 : raw.volume === 'high' ? 1 : DEFAULT_VOLUME,
       };
@@ -115,8 +158,8 @@ export class AudioEngine {
   private applySettings(): void {
     if (this.master === undefined || this.sfxBus === undefined || this.musicBus === undefined) return;
     this.master.gain.value = gainForVolume(this.settings.volume);
-    this.sfxBus.gain.value = this.settings.sfx ? 1 : 0;
-    this.musicBus.gain.value = this.settings.music ? 1 : 0;
+    this.sfxBus.gain.value = this.settings.sfx ? gainForVolume(this.settings.sfxVolume) : 0;
+    this.musicBus.gain.value = this.settings.music ? gainForVolume(this.settings.musicVolume) : 0;
   }
 
   // ---------- loading ----------
@@ -233,7 +276,7 @@ export class AudioEngine {
       // The scene may have changed while the file was loading.
       if (buffer === undefined || this.ctx === undefined || this.musicBus === undefined || this.wantedTrack() !== def.id || this.music?.id === def.id) return;
       const source = this.ctx.createBufferSource();
-      source.buffer = buffer;
+      source.buffer = loopable(this.ctx, buffer);
       source.loop = true;
       const gain = this.ctx.createGain();
       gain.gain.setValueAtTime(0, this.ctx.currentTime);
