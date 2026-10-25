@@ -2,9 +2,10 @@
 // Presentation only: it reads what the renderer already knows (position, speed, build) and never touches the sim.
 
 import * as THREE from 'three';
-import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS, MATERIALS, baseHead, clampIndex, meshes, torsoMeshes, type BodyDef, type LegDef, type Motion, type Rig } from './parts.js';
+import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS, MATERIALS, baseHead, withRim, clampIndex, meshes, torsoMeshes, type BodyDef, type LegDef, type Motion, type Rig } from './parts.js';
 import { createHat, type HatModel } from './hats.js';
 import { DEFAULT_STYLE, TINTS, type Style } from './style.js';
+import { resolveLimbs, worstOverlap, type Probe, type TorsoCapsule } from './collide.js';
 
 export interface BuildIds {
   readonly body: number;
@@ -77,7 +78,7 @@ export class MonsterModel {
   private style: Style = DEFAULT_STYLE;
   private hat: HatModel | undefined;
   /** This monster's own copy of the body material, so its tint never touches anyone else. */
-  private readonly litTint = (MATERIALS.lit as THREE.MeshLambertMaterial).clone();
+  private readonly litTint = withRim(new THREE.MeshLambertMaterial({ vertexColors: true }), 0x9fb4ff, 0.3);
 
   /** How far this body and legs combination sinks below the ground at rest (some feet reach lower than the chassis allows). */
   private static readonly liftCache = new Map<string, number>();
@@ -315,6 +316,7 @@ export class MonsterModel {
     this.legs?.animate(motion);
     this.arms?.animate(motion);
     this.head?.animate(motion);
+    if (!this.measuring) resolveLimbs(this.probes(), this.bodyCapsule());
 
     // squash and pop-in
     this.root.scale.set(1 + 0.18 * this.squash, 1 - 0.22 * this.squash, 1 + 0.18 * this.squash);
@@ -327,12 +329,26 @@ export class MonsterModel {
     }
   }
 
+  private probes(): Probe[] {
+    return [...(this.legs?.probes ?? []), ...(this.arms?.probes ?? [])];
+  }
+
+  private bodyCapsule(): TorsoCapsule {
+    return { node: this.torso, ...this.body.collider };
+  }
+
+  /** The deepest overlap between two limbs, or a limb and the body, right now (for tests). */
+  limbOverlap(): number {
+    this.root.updateMatrixWorld(true);
+    return worstOverlap(this.probes(), this.bodyCapsule());
+  }
+
   /** How many triangles this monster draws (for budget checks). */
   triangles(): number {
     let n = 0;
     this.root.traverse((o) => {
       const mesh = o as THREE.Mesh;
-      if (mesh.isMesh && mesh.visible) n += mesh.geometry.getAttribute('position').count / 3;
+      if (mesh.isMesh && mesh.visible) n += mesh.geometry.index ? mesh.geometry.index.count / 3 : mesh.geometry.getAttribute('position').count / 3;
     });
     return n;
   }

@@ -26,6 +26,7 @@
     "test:outage": "node scripts/run-ts.mjs scripts/outage-test.ts",
     "test:lobby": "node scripts/run-ts.mjs scripts/lobby-test.ts",
     "test:monsters": "node scripts/run-ts.mjs scripts/monster-test.ts",
+    "test:limbs": "node scripts/run-ts.mjs scripts/limb-overlap-test.ts",
     "test:getup": "node scripts/run-ts.mjs scripts/getup-test.ts",
     "test:city": "node scripts/run-ts.mjs scripts/city-test.ts",
     "test:slime": "node scripts/run-ts.mjs scripts/slime-test.ts",

@@ -21,11 +21,34 @@ const q = new THREE.Quaternion();
 const e = new THREE.Euler();
 const up = new THREE.Vector3(0, 1, 0);
 
+/** Hash of a position, 0..1: the same spot always paints the same, so every device sees the same monster. */
+const hash3 = (x: number, y: number, z: number): number => {
+  let h = Math.imul(Math.round(x * 211) ^ 0x9e3779b1, 0x85ebca6b) ^ Math.imul(Math.round(y * 211) ^ 0x7f4a7c15, 0xc2b2ae35) ^ Math.imul(Math.round(z * 211) ^ 0x165667b1, 0x27d4eb2f);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  return ((h ^ (h >>> 12)) >>> 0) / 4294967296;
+};
+
+export interface ShapeOptions {
+  /**
+   * Hand-painted shading baked into the vertex colours: faces turned up are a little lighter, faces turned down a little
+   * darker, with a faint grain. Off for glowing pieces (eyes, flames), which must stay one flat colour.
+   */
+  readonly paint?: boolean;
+}
+
 export class Shape {
   private parts: THREE.BufferGeometry[] = [];
+  private readonly paint: boolean;
 
-  /** Adds any geometry, coloured and transformed. The input geometry is copied, never modified. */
-  add(geometry: THREE.BufferGeometry, color: number, tf: Tf = {}): this {
+  constructor(options: ShapeOptions = {}) {
+    this.paint = options.paint ?? true;
+  }
+
+  /**
+   * Adds any geometry, coloured and transformed. The input geometry is copied, never modified. Normals the geometry
+   * already has are kept (so a sphere stays smooth); pass `flat` for hard facets.
+   */
+  add(geometry: THREE.BufferGeometry, color: number, tf: Tf = {}, flat = false): this {
     const g = geometry.index ? geometry.toNonIndexed() : geometry.clone();
     const [px, py, pz] = tf.p ?? [0, 0, 0];
     const [rx, ry, rz] = tf.r ?? [0, 0, 0];
@@ -34,17 +57,90 @@ export class Shape {
     m4.compose(new THREE.Vector3(px, py, pz), q, new THREE.Vector3(sx, sy, sz));
     g.applyMatrix4(m4);
     g.deleteAttribute('uv');
-    g.computeVertexNormals(); // non-indexed, so every face keeps its own flat normal
+    if (flat || !g.getAttribute('normal')) g.computeVertexNormals(); // non-indexed, so every face keeps its own flat normal
     const count = g.getAttribute('position').count;
     const c = new THREE.Color(color);
     const colors = new Float32Array(count * 3);
+    const pos = g.getAttribute('position');
+    const nor = g.getAttribute('normal');
     for (let i = 0; i < count; i += 1) {
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
+      let k = 1;
+      if (this.paint) {
+        const up = nor.getY(i);
+        k = 1 + 0.15 * up + (hash3(pos.getX(i), pos.getY(i), pos.getZ(i)) - 0.5) * 0.06;
+      }
+      colors[i * 3] = c.r * k;
+      colors[i * 3 + 1] = c.g * k;
+      colors[i * 3 + 2] = c.b * k;
     }
     g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     this.parts.push(g);
+    return this;
+  }
+
+  /**
+   * A smooth ellipsoid: a lump of body, with radii along x, y and z. `detail` picks how round it is:
+   * 0 a rough 20-sided stone, 1 a soft 56-triangle ball, 2 a smooth 120-triangle ball for the big shapes.
+   */
+  blob(rx: number, ry: number, rz: number, color: number, tf: Tf = {}, detail = 2): this {
+    const [sx, sy, sz] = tf.s ?? [1, 1, 1];
+    const geometry = detail <= 0 ? new THREE.IcosahedronGeometry(1, 0) : detail === 1 ? new THREE.SphereGeometry(1, 7, 5) : new THREE.SphereGeometry(1, 10, 7);
+    return this.add(geometry, color, { ...tf, s: [rx * sx, ry * sy, rz * sz] });
+  }
+
+  /**
+   * A body of revolution: `profile` is a list of [radius, height] from bottom to top, spun round the Y axis. Gives torsos,
+   * skulls, necks and pumpkins a smooth, designed silhouette. Scale x and z through tf.s to make it oval.
+   */
+  lathe(profile: readonly (readonly [number, number])[], segments: number, color: number, tf?: Tf): this {
+    const pts = profile.map(([r, y]) => new THREE.Vector2(r, y));
+    return this.add(new THREE.LatheGeometry(pts, segments), color, tf);
+  }
+
+  /** A smooth tapered tube through the points (a tail, a tentacle, a scar). Radius runs from `r0` to `r1` along it. */
+  tube(points: readonly V3[], r0: number, r1: number, color: number, radial = 6, steps = 10): this {
+    const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(...p)));
+    const frames = curve.computeFrenetFrames(steps, false);
+    const positions: number[] = [];
+    const index: number[] = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      const centre = curve.getPointAt(t);
+      const r = r0 + (r1 - r0) * t;
+      for (let j = 0; j < radial; j += 1) {
+        const a = (j / radial) * Math.PI * 2;
+        const n = frames.normals[i]!, b = frames.binormals[i]!;
+        positions.push(centre.x + r * (Math.cos(a) * n.x + Math.sin(a) * b.x), centre.y + r * (Math.cos(a) * n.y + Math.sin(a) * b.y), centre.z + r * (Math.cos(a) * n.z + Math.sin(a) * b.z));
+      }
+    }
+    for (let i = 0; i < steps; i += 1)
+      for (let j = 0; j < radial; j += 1) {
+        const a = i * radial + j, b = i * radial + ((j + 1) % radial), c = (i + 1) * radial + j, d = (i + 1) * radial + ((j + 1) % radial);
+        index.push(a, c, b, b, c, d);
+      }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    g.setIndex(index);
+    g.computeVertexNormals();
+    return this.add(g, color);
+  }
+
+  /**
+   * A row of cross stitches along a straight seam from `a` to `b`, lying on a surface that faces `normal`: a thin thread
+   * down the middle and `count` little bars across it, each tilted like a real stitch.
+   */
+  seam(a: V3, b: V3, normal: V3, count: number, color: number, width = 0.12, thread = 0.012): this {
+    const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b);
+    const along = to.clone().sub(from);
+    const n = new THREE.Vector3(...normal).normalize();
+    const across = new THREE.Vector3().crossVectors(along, n).normalize();
+    const dir = along.clone().normalize();
+    this.limb(a, b, thread, thread, color, 4);
+    for (let i = 0; i < count; i += 1) {
+      const mid = from.clone().lerp(to, (i + 0.5) / count);
+      const bar = across.clone().multiplyScalar(width / 2).add(dir.clone().multiplyScalar(width * 0.28));
+      this.limb([mid.x - bar.x, mid.y - bar.y, mid.z - bar.z], [mid.x + bar.x, mid.y + bar.y, mid.z + bar.z], thread * 1.15, thread * 1.15, color, 4);
+    }
     return this;
   }
 
@@ -74,14 +170,24 @@ export class Shape {
   }
 
   /** Ring (torus) lying flat around the Y axis, for ribs and bands. */
-  ring(radius: number, tube: number, color: number, tf?: Tf, arc = Math.PI * 2): this {
+  ring(radius: number, tube: number, color: number, tf?: Tf, arc = Math.PI * 2, radial = 4, tubular = 10): this {
     const t = tf ?? {};
-    return this.add(new THREE.TorusGeometry(radius, tube, 3, 8, arc), color, { ...t, r: t.r ?? [Math.PI / 2, 0, 0] });
+    return this.add(new THREE.TorusGeometry(radius, tube, radial, tubular, arc), color, { ...t, r: t.r ?? [Math.PI / 2, 0, 0] });
+  }
+
+  /** Cross stitches along a path of points (a seam that follows a curved surface); `normals` say which way the surface faces at each point. */
+  seamPath(points: readonly V3[], normals: readonly V3[], perSegment: number, color: number, width = 0.12, thread = 0.012): this {
+    for (let i = 0; i + 1 < points.length; i += 1) {
+      const n0 = new THREE.Vector3(...normals[i]!), n1 = new THREE.Vector3(...normals[i + 1]!);
+      const n = n0.add(n1).normalize();
+      this.seam(points[i]!, points[i + 1]!, [n.x, n.y, n.z], perSegment, color, width, thread);
+    }
+    return this;
   }
 
   /** A tapered rod between two points (a limb segment, a claw, a horn). */
   /** A tapered rod between two points. Its ends are left open (a joint, claw or hand always covers them): half the triangles. */
-  limb(a: V3, b: V3, radiusA: number, radiusB: number, color: number, segments = 6, capped = false): this {
+  limb(a: V3, b: V3, radiusA: number, radiusB: number, color: number, segments = 8, capped = false): this {
     const from = new THREE.Vector3(...a);
     const to = new THREE.Vector3(...b);
     const dir = to.clone().sub(from);

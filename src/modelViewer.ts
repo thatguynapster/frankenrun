@@ -43,10 +43,16 @@ ui.legs.value = '1';
 ui.arms.value = '1';
 ui.head.value = '2';
 
+/** Camera distance and height of the point it looks at (window.viewer.zoom(r, y)). */
+const zoom = { r: 9.5, y: 1.1 };
 const state = { x: 0, frozen: false, swinging: false, trailing: false, time: 0 };
 /** A row of monsters wearing every hat, for checking the fit side by side. */
 let row: MonsterModel[] = [];
 let rowFocus = false;
+/** Contact sheet (window.viewer.sheet): where each monster stands, and how fast they all run. */
+let sheetCells: ([number, number] | undefined)[] = [];
+let sheetSpeed = 0;
+const sheetX: number[] = [];
 let focusIndex = -1; // -1 = the whole row, else one monster of it, up close
 
 function build(): BuildIds {
@@ -75,14 +81,17 @@ function frame(now: number): void {
     model.update({ x: state.x, y: 1, z: 0, qx: 0, qy: 0, qz: 0, qw: 1, speed, swingPole: state.swinging ? 1 : -1, trailing: state.trailing }, dt, state.time);
     model.root.position.set(0, 1, 0); // the model runs on the spot
     row.forEach((m, i) => {
-      m.update({ x: (i - 3) * 2.7, y: 1, z: 0, qx: 0, qy: 0, qz: 0, qw: 1, speed: 0, swingPole: -1, trailing: false }, dt, state.time);
-      m.root.position.set((i - 3) * 2.7, 1, 0);
+      const cell = sheetCells[i];
+      const speed = cell ? sheetSpeed : 0;
+      sheetX[i] = (sheetX[i] ?? 0) + speed * dt;
+      m.update({ x: (cell ? cell[0] : (i - 3) * 2.7) + (sheetX[i] ?? 0), y: 1, z: cell ? cell[1] : 0, qx: 0, qy: 0, qz: 0, qw: 1, speed, swingPole: -1, trailing: false }, dt, state.time);
+      m.root.position.set(cell ? cell[0] : (i - 3) * 2.7, 1, cell ? cell[1] : 0);
     });
   }
   const az = (Number(ui.az.value) * Math.PI) / 180;
   const el = (Number(ui.el.value) * Math.PI) / 180;
-  const r = rowFocus ? (focusIndex >= 0 ? 4.2 : 15) : 9.5;
-  const lookY = rowFocus ? (focusIndex >= 0 ? 2.75 : 3.1) : 1.1;
+  const r = rowFocus ? (focusIndex >= 0 ? 4.2 : 15) : zoom.r;
+  const lookY = rowFocus ? (focusIndex >= 0 ? 2.75 : 3.1) : zoom.y;
   const lookX = focusIndex >= 0 ? (focusIndex - 3) * 2.7 : 0;
   camera.position.set(lookX + Math.sin(az) * Math.cos(el) * r, lookY + Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r);
   camera.lookAt(lookX, lookY, 0);
@@ -108,6 +117,10 @@ requestAnimationFrame(frame);
   run(speed: number): void {
     ui.speed.value = String(speed);
   },
+  zoom(r: number, y: number): void {
+    zoom.r = r;
+    zoom.y = y;
+  },
   freeze(on = true): void {
     state.frozen = on;
   },
@@ -131,6 +144,26 @@ requestAnimationFrame(frame);
     model.root.visible = false;
     rowFocus = true;
   },
+  /** Every legs and arms combination of one body, running on the spot in a grid (4 legs across, 3 arms down). */
+  sheet(body: number, head: number, speed: number, onlyArms = -1): void {
+    for (const m of row) scene.remove(m.root);
+    row = [];
+    sheetCells = [];
+    sheetSpeed = speed;
+    for (let arms = 0; arms < ARM_DEFS.length; arms += 1)
+      for (let legs = 0; legs < LEG_DEFS.length; legs += 1) {
+        if (onlyArms >= 0 && arms !== onlyArms) continue;
+        const m = new MonsterModel(0x6fbf5a);
+        m.setBuild({ body, legs, arms, head }, false);
+        scene.add(m.root);
+        row.push(m);
+        sheetCells.push([(legs - 1.5) * 3.6, onlyArms >= 0 ? 0 : (arms - 1) * -3.4]);
+      }
+    model.root.visible = false;
+    rowFocus = false;
+    zoom.r = onlyArms >= 0 ? 15 : 22;
+    zoom.y = 1.6;
+  },
   focus(index: number): void {
     focusIndex = index;
   },
@@ -144,4 +177,5 @@ requestAnimationFrame(frame);
     model.snapClaws();
   },
   triangles: (): number => model.triangles(),
+  model,
 };

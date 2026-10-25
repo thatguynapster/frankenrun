@@ -93,22 +93,59 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
   if (ctx === null) return undefined;
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size, size);
-  const lit = new Set([1, 6, 8, 11, 13]);
+  // plaster: faint speckle (left edge of every cell stays plain, the plinth, parapets and doors sample it)
+  let seed = 7;
+  const rnd = (): number => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  for (let k = 0; k < 900; k += 1) {
+    const sx = rnd() * size, sy = rnd() * size;
+    if (sx % cell < 8) continue;
+    ctx.fillStyle = rnd() < 0.5 ? 'rgba(120,110,130,0.07)' : 'rgba(255,255,255,0.35)';
+    ctx.fillRect(sx, sy, 1 + rnd() * 2, 1 + rnd() * 2);
+  }
+  const lit = new Set([1, 6, 8, 11, 13, 14]);
   for (let row = 0; row < 4; row += 1) {
     for (let col = 0; col < 4; col += 1) {
       const x = col * cell, y = row * cell;
       // floor slab line along the top of each floor (canvas y runs down, texture v runs up: row 3 is the ground floor)
-      ctx.fillStyle = '#c9c9d4';
-      ctx.fillRect(x, y, cell, 4);
-      // window with a frame
-      const wx = x + cell * 0.2, wy = y + cell * 0.25, ww = cell * 0.6, wh = cell * 0.5;
-      ctx.fillStyle = '#6b6b86';
-      ctx.fillRect(wx - 3, wy - 3, ww + 6, wh + 6);
+      ctx.fillStyle = '#d4d0dc';
+      ctx.fillRect(x, y, cell, 5);
+      ctx.fillStyle = '#9a96ab';
+      ctx.fillRect(x, y + 5, cell, 2);
       const index = row * 4 + col;
-      ctx.fillStyle = lit.has(index) ? '#ffe8a0' : '#3a3f63';
+      const on = lit.has(index);
+      const shuttered = (row * 3 + col) % 5 === 0;
+      const wx = x + cell * 0.27, wy = y + cell * 0.27, ww = cell * 0.46, wh = cell * 0.5;
+      // lintel over the window and a projecting sill under it
+      ctx.fillStyle = '#e6e2ec';
+      ctx.fillRect(wx - 5, wy - 6, ww + 10, 4);
+      ctx.fillStyle = '#e6e2ec';
+      ctx.fillRect(wx - 5, wy + wh + 1, ww + 10, 4);
+      ctx.fillStyle = '#7c7890';
+      ctx.fillRect(wx - 5, wy + wh + 5, ww + 10, 2);
+      // frame, then the glass: a gradient, warm when the light is on
+      ctx.fillStyle = '#f4f1f8';
+      ctx.fillRect(wx - 3, wy - 3, ww + 6, wh + 5);
+      const glass = ctx.createLinearGradient(0, wy, 0, wy + wh);
+      if (on) { glass.addColorStop(0, '#ffe9a6'); glass.addColorStop(1, '#f0b95a'); } else { glass.addColorStop(0, '#46507c'); glass.addColorStop(1, '#232846'); }
+      ctx.fillStyle = glass;
       ctx.fillRect(wx, wy, ww, wh);
-      ctx.fillStyle = lit.has(index) ? '#e6c36a' : '#2b2f4e';
+      ctx.fillStyle = on ? '#fff6d0' : '#6a72a0';
+      ctx.fillRect(wx + 2, wy + 2, ww * 0.3, 2); // a glint
+      ctx.fillStyle = on ? '#b98a3c' : '#14172b';
       ctx.fillRect(wx + ww / 2 - 1, wy, 2, wh); // mullion
+      ctx.fillRect(wx, wy + wh * 0.42, ww, 2); // transom
+      if (on && (index & 1) === 0) {
+        ctx.fillStyle = '#3c2a1c'; // somebody standing at the window
+        ctx.fillRect(wx + ww * 0.62, wy + wh * 0.5, ww * 0.16, wh * 0.5);
+        ctx.fillRect(wx + ww * 0.64, wy + wh * 0.34, ww * 0.12, wh * 0.16);
+      }
+      if (shuttered) {
+        ctx.fillStyle = '#3f6a58';
+        ctx.fillRect(wx - 11, wy - 3, 7, wh + 5);
+        ctx.fillRect(wx + ww + 4, wy - 3, 7, wh + 5);
+        ctx.fillStyle = '#2b4a3e';
+        for (let sl = 0; sl < 4; sl += 1) { ctx.fillRect(wx - 11, wy + sl * 6, 7, 1); ctx.fillRect(wx + ww + 4, wy + sl * 6, 7, 1); }
+      }
     }
   }
   const t = new THREE.CanvasTexture(canvas);
@@ -175,13 +212,14 @@ interface Chunk {
   roofs: THREE.BufferGeometry[];
   lamps: THREE.BufferGeometry[];
   pools: THREE.BufferGeometry[];
+  street: THREE.BufferGeometry[];
 }
 
 function chunkOf(chunks: Map<string, Chunk>, x: number, z: number): Chunk {
   const key = `${Math.floor(x / CHUNK)},${Math.floor(z / CHUNK)}`;
   let c = chunks.get(key);
   if (c === undefined) {
-    c = { cars: [], props: [], signs: [], walls: [], roofs: [], lamps: [], pools: [] };
+    c = { cars: [], props: [], signs: [], walls: [], roofs: [], lamps: [], pools: [], street: [] };
     chunks.set(key, c);
   }
   return c;
@@ -195,7 +233,31 @@ function geometryFrom(positions: number[], colors: number[], uvs?: number[]): TH
   return g;
 }
 
-/** Walls (windowed, shaded darker toward the ground), then a roof: pitched over small houses, flat over big blocks. */
+// A plain stretch of the facade tile (no window, no floor line): the plinth, parapets and doors use it for flat colour.
+const PLAIN_U = 4 / 256, PLAIN_V = 1 - 32 / 256;
+const STONE = new THREE.Color(0x6d6a78);
+const PLINTH = 0.6; // metres of darker stone at the foot of every wall
+const FLOOR = 3; // metres per floor: matches the facade tile (4 floors in 12 m)
+
+type P3 = readonly [number, number, number];
+
+/** Collects wall triangles (position, colour, uv) for one building. */
+class WallBuilder {
+  readonly p: number[] = [];
+  readonly c: number[] = [];
+  readonly u: number[] = [];
+  /** A quad a-b-c-d (anticlockwise seen from outside), flat colour from the plain part of the tile. */
+  flat(a: P3, b: P3, c: P3, d: P3, color: THREE.Color, shade: number): void {
+    const v = [a, b, c, a, c, d];
+    for (const q of v) {
+      this.p.push(q[0], q[1], q[2]);
+      this.c.push(color.r * shade, color.g * shade, color.b * shade);
+      this.u.push(PLAIN_U, PLAIN_V);
+    }
+  }
+}
+
+/** Walls (plinth, windowed body, cornice, parapet), then a roof: pitched with eaves over small houses, flat over big blocks. */
 function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   const f = footprintOf(b);
   if (f === undefined) return;
@@ -204,31 +266,77 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   const tint = new THREE.Color(FACADES[h32(seed) % FACADES.length]!);
   const n = f.xs.length;
   const sign = f.area >= 0 ? 1 : -1; // winding, so the wall normal points outward
+  const small = Math.abs(f.area) < 220 && height < 9 && inside(f, f.cx, f.cz);
+  const tall = height >= 9;
+  const trim = new THREE.Color(tint).lerp(new THREE.Color(0xf4efe4), 0.5);
+  const plinth = new THREE.Color(tint).lerp(STONE, 0.6);
 
-  const wp: number[] = [], wc: number[] = [], wu: number[] = [];
+  const walls = new WallBuilder();
+  const wp = walls.p, wc = walls.c, wu = walls.u;
+  let balconies = tall && height < 34 && rand01(seed + 61) < 0.5;
   for (let k = 0; k < n; k += 1) {
     const j = (k + 1) % n;
     const x0 = f.xs[k]!, z0 = f.zs[k]!, x1 = f.xs[j]!, z1 = f.zs[j]!;
     const len = Math.hypot(x1 - x0, z1 - z0);
     if (len < 0.3) continue;
-    const nx = (sign * (z1 - z0)) / len, nz = (-sign * (x1 - x0)) / len; // outward
+    const ux = (x1 - x0) / len, uz = (z1 - z0) / len;
+    const nx = sign * uz, nz = -sign * ux; // outward
+    const wall = new THREE.Color(tint).multiplyScalar(0.94 + 0.12 * rand01(seed + k * 17)); // each wall a touch different
     const shade = shadeFor(nx, 0, nz);
-    const bottom = shade * 0.7, top = shade;
-    const u1 = len / 16, v1 = height / 12;
-    // two triangles (the material draws both sides, so the winding does not matter)
+    const bottom = shade * 0.78, top = shade;
+    const u1 = len / 16;
+    // the body: windows tiled along it (the tile starts at the wall's own start, so windows sit at 2, 6, 10 ... metres)
+    const y0 = PLINTH, y1 = height;
+    const v0 = y0 / 12, v1 = y1 / 12;
     const quad = [
-      [x0, 0, z0, 0, 0, bottom], [x1, 0, z1, u1, 0, bottom], [x1, height, z1, u1, v1, top],
-      [x0, 0, z0, 0, 0, bottom], [x1, height, z1, u1, v1, top], [x0, height, z0, 0, v1, top],
+      [x0, y0, z0, 0, v0, bottom], [x1, y0, z1, u1, v0, bottom], [x1, y1, z1, u1, v1, top],
+      [x0, y0, z0, 0, v0, bottom], [x1, y1, z1, u1, v1, top], [x0, y1, z0, 0, v1, top],
     ] as const;
     for (const v of quad) {
       wp.push(v[0], v[1], v[2]);
-      wc.push(tint.r * v[5], tint.g * v[5], tint.b * v[5]);
+      wc.push(wall.r * v[5], wall.g * v[5], wall.b * v[5]);
       wu.push(v[3], v[4]);
+    }
+    // the plinth: darker stone, a hair proud of the wall so it reads as a step
+    const o = 0.06;
+    const ax: P3 = [x0 + nx * o, 0, z0 + nz * o], bx: P3 = [x1 + nx * o, 0, z1 + nz * o];
+    walls.flat(ax, bx, [bx[0], PLINTH, bx[2]], [ax[0], PLINTH, ax[2]], plinth, shade * 0.85);
+    if (len < 3) continue;
+    if (tall) {
+      // cornice: a lit lip round the top of the wall, standing out from it
+      const e = 0.32;
+      const lo: P3 = [x0 + nx * e, height - 0.34, z0 + nz * e], lo1: P3 = [x1 + nx * e, height - 0.34, z1 + nz * e];
+      const hi: P3 = [lo[0], height, lo[2]], hi1: P3 = [lo1[0], height, lo1[2]];
+      walls.flat(lo, lo1, hi1, hi, trim, shade);
+      walls.flat(hi, hi1, [x1, height, z1], [x0, height, z0], trim, shadeFor(0, 1, 0));
+      // parapet: the wall carries on above the roof
+      const pr: P3 = [x0, height + 0.7, z0], pr1: P3 = [x1, height + 0.7, z1];
+      walls.flat([x0, height, z0], [x1, height, z1], pr1, pr, wall, top * 0.92);
+    }
+    if (balconies && len > 6 && height > 10) {
+      // a balcony on the first long wall: a slab and a rail on each upper floor, in front of a window
+      balconies = false;
+      const cols = Math.floor((len - 2) / 4);
+      const col = 1 + (h32(seed + 5) % Math.max(1, cols - 1));
+      const d = col * 4 + 2;
+      const cx = x0 + ux * d, cz = z0 + uz * d;
+      const floors = Math.min(3, Math.floor(height / FLOOR) - 1);
+      for (let fl = 1; fl <= floors; fl += 1) {
+        const y = fl * FLOOR + 0.05;
+        const hw = 1.25, dep = 0.9;
+        const bl: P3 = [cx - ux * hw, 0, cz - uz * hw], br: P3 = [cx + ux * hw, 0, cz + uz * hw];
+        const fo = (p: P3, off: number, yy: number): P3 => [p[0] + nx * off, yy, p[2] + nz * off];
+        // slab top and front, then a low rail (front and top)
+        walls.flat(fo(bl, 0.02, y), fo(br, 0.02, y), fo(br, dep, y), fo(bl, dep, y), trim, shadeFor(0, 1, 0));
+        walls.flat(fo(bl, dep, y - 0.18), fo(br, dep, y - 0.18), fo(br, dep, y), fo(bl, dep, y), trim, shade * 0.9);
+        walls.flat(fo(bl, dep, y), fo(br, dep, y), fo(br, dep, y + 1.0), fo(bl, dep, y + 1.0), STONE, shade * 0.7);
+        walls.flat(fo(bl, dep, y + 1.0), fo(br, dep, y + 1.0), fo(br, dep - 0.1, y + 1.0), fo(bl, dep - 0.1, y + 1.0), trim, shadeFor(0, 1, 0));
+      }
     }
   }
   if (wp.length > 0) chunk.walls.push(geometryFrom(wp, wc, wu));
 
-  // A glowing shop sign on the longest wall of some buildings (street level, facing out).
+  // A glowing shop sign, a door and an awning on the longest wall of some buildings (street level, facing out).
   if (rand01(seed + 21) < 0.4 && height < 22) {
     let bk = -1, blen = 0;
     for (let k = 0; k < n; k += 1) {
@@ -246,31 +354,48 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       const cx = x0 + (x1 - x0) * t, cz = z0 + (z1 - z0) * t;
       const neon = new THREE.Color(SIGN_COLORS[h32(seed + 44) % SIGN_COLORS.length]!);
       const dark = new THREE.Color(0x14121f);
-      const quad = (grow: number, off: number, c: THREE.Color): void => {
-        const hw = w / 2 + grow, hh = h / 2 + grow;
-        const px = cx + nx * off, pz = cz + nz * off, yc = y0 + h / 2;
-        const a = [px - ux * hw, yc - hh, pz - uz * hw], b = [px + ux * hw, yc - hh, pz + uz * hw], c2 = [px + ux * hw, yc + hh, pz + uz * hw], d = [px - ux * hw, yc + hh, pz - uz * hw];
-        const pos = [...a, ...b, ...c2, ...a, ...c2, ...d];
-        const col: number[] = [];
-        for (let v = 0; v < 6; v += 1) col.push(c.r, c.g, c.b);
-        chunk.signs.push(geometryFrom(pos, col));
+      const sg = new WallBuilder();
+      const at = (along: number, off: number, y: number): P3 => [cx + ux * along + nx * off, y, cz + uz * along + nz * off];
+      const push = (a: P3, b2: P3, c2: P3, d2: P3, c: THREE.Color, shade = 1): void => {
+        sg.flat(a, b2, c2, d2, c, shade);
       };
-      quad(0.12, 0.05, dark); // backing board
-      quad(0, 0.1, neon); // the glowing panel
+      const board = (grow: number, off: number, c: THREE.Color): void => {
+        const hw = w / 2 + grow, yl = y0 - grow, yh = y0 + h + grow;
+        push(at(-hw, off, yl), at(hw, off, yl), at(hw, off, yh), at(-hw, off, yh), c);
+      };
+      board(0.12, 0.05, dark); // backing board
+      board(0, 0.1, neon); // the glowing panel
+      // a door under the sign and a striped awning over it
+      const dw = 0.55;
+      const doorOff = 0.07;
+      push(at(-dw, doorOff, 0.05), at(dw, doorOff, 0.05), at(dw, doorOff, 2.15), at(-dw, doorOff, 2.15), new THREE.Color(0x2a2336), shadeFor(nx, 0, nz) * 0.9);
+      const awn = new THREE.Color(SIGN_COLORS[h32(seed + 77) % SIGN_COLORS.length]!).lerp(new THREE.Color(0x201a30), 0.35);
+      const aw = Math.min(w * 0.5, 1.4);
+      for (let s = 0; s < 2; s += 1) {
+        const a0 = -aw + s * aw, a1 = a0 + aw;
+        push(at(a0, 0.08, 2.4), at(a1, 0.08, 2.4), at(a1, 0.95, 2.2), at(a0, 0.95, 2.2), s % 2 === 0 ? awn : new THREE.Color(0xf0e6d8), 0.95);
+      }
+      chunk.signs.push(geometryFrom(sg.p, sg.c, sg.u));
     }
   }
 
   // roof
   const rp: number[] = [], rc: number[] = [];
-  const small = Math.abs(f.area) < 220 && height < 9 && inside(f, f.cx, f.cz);
   if (small) {
     const roof = new THREE.Color(ROOFS[h32(seed + 5) % ROOFS.length]!);
     const rise = 1.2 + Math.min(2, Math.sqrt(Math.abs(f.area)) * 0.1);
+    const eave = 0.45; // the roof overhangs the walls
+    const out = (x: number, z: number): [number, number] => {
+      const dx = x - f.cx, dz = z - f.cz;
+      const l = Math.hypot(dx, dz) || 1;
+      return [x + (dx / l) * eave, z + (dz / l) * eave];
+    };
     for (let k = 0; k < n; k += 1) {
       const j = (k + 1) % n;
       const x0 = f.xs[k]!, z0 = f.zs[k]!, x1 = f.xs[j]!, z1 = f.zs[j]!;
       const ex = x1 - x0, ez = z1 - z0;
-      const tri = [x0, height, z0, x1, height, z1, f.cx, height + rise, f.cz];
+      const [ox0, oz0] = out(x0, z0), [ox1, oz1] = out(x1, z1);
+      const tri = [ox0, height - 0.15, oz0, ox1, height - 0.15, oz1, f.cx, height + rise, f.cz];
       // outward normal of this roof face, for the baked shading
       const len = Math.hypot(ex, ez) || 1;
       const nx = (sign * ez) / len, nz = (-sign * ex) / len;
@@ -278,9 +403,15 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       const l = Math.hypot(nx, slope, nz) || 1;
       const shade = shadeFor(nx / l, slope / l, nz / l);
       for (let v = 0; v < 3; v += 1) {
+        const ridge = v === 2 ? 1.12 : 1; // the ridge catches a little more light than the eaves
         rp.push(tri[v * 3]!, tri[v * 3 + 1]!, tri[v * 3 + 2]!);
-        rc.push(roof.r * shade, roof.g * shade, roof.b * shade);
+        rc.push(roof.r * shade * ridge, roof.g * shade * ridge, roof.b * shade * ridge);
       }
+    }
+    // a chimney on some houses
+    if (rand01(seed + 13) < 0.25) {
+      const cxp = f.cx + (f.xs[0]! - f.cx) * 0.35, czp = f.cz + (f.zs[0]! - f.cz) * 0.35;
+      if (inside(f, cxp, czp)) addProp(rp, rc, 'chimney', cxp, height + rise * 0.55, czp);
     }
   } else {
     const flat = new THREE.Color(FLAT_ROOF).lerp(new THREE.Color(FACADES[h32(seed) % FACADES.length]!), 0.15);
@@ -297,22 +428,150 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
         rc.push(flat.r * shade, flat.g * shade, flat.b * shade);
       }
     }
-    // a rooftop box (a stairwell or water tank) on some of the bigger roofs
-    if (rand01(seed + 9) < 0.4 && inside(f, f.cx, f.cz) && Math.abs(f.area) > 60) {
-      const box = new THREE.BoxGeometry(2.2, 1.4, 1.8).toNonIndexed();
-      box.translate(f.cx, height + 0.7, f.cz);
-      const pos = box.getAttribute('position');
-      const nor = box.getAttribute('normal');
-      const col = new THREE.Color(0x6e7380);
-      for (let v = 0; v < pos.count; v += 1) {
-        rp.push(pos.getX(v), pos.getY(v), pos.getZ(v));
-        const s = shadeFor(nor.getX(v), nor.getY(v), nor.getZ(v));
-        rc.push(col.r * s, col.g * s, col.b * s);
+    // rooftop clutter on the bigger roofs: a water tank, an air-conditioning box, a stairwell
+    if (inside(f, f.cx, f.cz) && Math.abs(f.area) > 60) {
+      const r = rand01(seed + 9);
+      if (r < 0.3) addProp(rp, rc, 'tank', f.cx, height, f.cz);
+      else if (r < 0.6) addProp(rp, rc, 'stair', f.cx, height, f.cz);
+      if (rand01(seed + 19) < 0.5) {
+        const ax = f.cx + (f.xs[1 % n]! - f.cx) * 0.4, az = f.cz + (f.zs[1 % n]! - f.cz) * 0.4;
+        if (inside(f, ax, az)) addProp(rp, rc, 'ac', ax, height, az);
       }
-      box.dispose();
     }
   }
   if (rp.length > 0) chunk.roofs.push(geometryFrom(rp, rc));
+}
+
+const roofProps = new Map<string, { pos: Float32Array; col: Float32Array }>();
+/** Appends a rooftop prop (shaded, flat-coloured triangles) at a spot on a roof. */
+function addProp(rp: number[], rc: number[], kind: 'tank' | 'stair' | 'ac' | 'chimney', x: number, y: number, z: number): void {
+  let t = roofProps.get(kind);
+  if (t === undefined) {
+    const s = new Shape();
+    if (kind === 'tank') {
+      s.box(1.2, 1.0, 1.2, 0x4a4d5a, { p: [0, 0.5, 0] }); // stand
+      s.cyl(0.95, 0.95, 1.5, 6, 0x5f86a8, { p: [0, 1.75, 0] }, true); // the tank
+    } else if (kind === 'stair') {
+      s.box(2.4, 1.7, 2.0, 0x7a7e8c, { p: [0, 0.85, 0] });
+      s.box(0.7, 1.2, 0.08, 0x2a2336, { p: [0.3, 0.6, 1.02] });
+    } else if (kind === 'ac') {
+      s.box(1.3, 0.8, 0.9, 0x9ca0ae, { p: [0, 0.4, 0] });
+    } else {
+      s.box(0.7, 1.5, 0.7, 0x8a4a3a, { p: [0, 0.75, 0] });
+    }
+    const g = bakeShade(s.build()).toNonIndexed();
+    t = { pos: g.getAttribute('position').array as Float32Array, col: g.getAttribute('color').array as Float32Array };
+    g.dispose();
+    roofProps.set(kind, t);
+  }
+  for (let v = 0; v < t.pos.length; v += 3) {
+    rp.push(t.pos[v]! + x, t.pos[v + 1]! + y, t.pos[v + 2]! + z);
+    rc.push(t.col[v]!, t.col[v + 1]!, t.col[v + 2]!);
+  }
+}
+
+// ---------- street level: pavements with kerbs, and dashed centre lines ----------
+
+const PAVEMENT = new THREE.Color(0x8a8398);
+const KERB = new THREE.Color(0x5d6078);
+const PAINT = new THREE.Color(0xd9d3b4);
+const PAVE_WIDTH = 1.5; // metres
+const KERB_HEIGHT = 0.14;
+
+/** Looks up which road surfaces are near a point, so pavements and paint stop short of side streets. */
+class RoadIndex {
+  private readonly cells = new Map<number, number[]>(); // cell -> indices into `segs`
+  private readonly segs: { x0: number; z0: number; x1: number; z1: number; hw: number; road: number }[] = [];
+  private static readonly CELL = 24;
+  constructor(roads: MapData['roads']) {
+    roads.forEach((road, ri) => {
+      for (let i = 0; i + 3 < road.pts.length; i += 2) {
+        const seg = { x0: road.pts[i]! / 10, z0: road.pts[i + 1]! / 10, x1: road.pts[i + 2]! / 10, z1: road.pts[i + 3]! / 10, hw: road.hw / 10, road: ri };
+        const id = this.segs.push(seg) - 1;
+        const len = Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0);
+        const steps = Math.max(1, Math.ceil(len / 8));
+        const reach = seg.hw + PAVE_WIDTH + 2;
+        for (let s = 0; s <= steps; s += 1) {
+          const x = seg.x0 + ((seg.x1 - seg.x0) * s) / steps, z = seg.z0 + ((seg.z1 - seg.z0) * s) / steps;
+          for (let cx = Math.floor((x - reach) / RoadIndex.CELL); cx <= Math.floor((x + reach) / RoadIndex.CELL); cx += 1) {
+            for (let cz = Math.floor((z - reach) / RoadIndex.CELL); cz <= Math.floor((z + reach) / RoadIndex.CELL); cz += 1) {
+              const key = cx * 100003 + cz;
+              const list = this.cells.get(key);
+              if (list === undefined) this.cells.set(key, [id]);
+              else if (list[list.length - 1] !== id) list.push(id);
+            }
+          }
+        }
+      }
+    });
+  }
+  /** True when (x, z) lies within `margin` metres of the surface of any road other than `except`. */
+  covered(x: number, z: number, margin: number, except: number): boolean {
+    const list = this.cells.get(Math.floor(x / RoadIndex.CELL) * 100003 + Math.floor(z / RoadIndex.CELL));
+    if (list === undefined) return false;
+    for (const id of list) {
+      const s = this.segs[id]!;
+      if (s.road === except) continue;
+      const dx = s.x1 - s.x0, dz = s.z1 - s.z0;
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - s.x0) * dx + (z - s.z0) * dz) / l2));
+      if (Math.hypot(x - (s.x0 + dx * t), z - (s.z0 + dz * t)) < s.hw + margin) return true;
+    }
+    return false;
+  }
+}
+
+/** Raised pavements on both sides of every road and a dashed centre line on the wide ones. */
+function addStreet(map: MapData, chunks: Map<string, Chunk>): void {
+  const index = new RoadIndex(map.roads);
+  const up = shadeFor(0, 1, 0) * 0.82;
+  const pushQuad = (chunk: Chunk, a: P3, b: P3, c: P3, d: P3, color: THREE.Color, shade: number): void => {
+    const pos = [...a, ...b, ...c, ...a, ...c, ...d];
+    const col: number[] = [];
+    for (let v = 0; v < 6; v += 1) col.push(color.r * shade, color.g * shade, color.b * shade);
+    chunk.street.push(geometryFrom(pos, col));
+  };
+  map.roads.forEach((road, ri) => {
+    const hw = road.hw / 10;
+    for (let i = 0; i + 3 < road.pts.length; i += 2) {
+      const x0 = road.pts[i]! / 10, z0 = road.pts[i + 1]! / 10, x1 = road.pts[i + 2]! / 10, z1 = road.pts[i + 3]! / 10;
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      if (len < 1) continue;
+      const ux = (x1 - x0) / len, uz = (z1 - z0) / len;
+      const nx = -uz, nz = ux; // left of the direction of travel
+      const chunk = chunkOf(chunks, (x0 + x1) / 2, (z0 + z1) / 2);
+      const at = (s: number, off: number, y: number): P3 => [x0 + ux * s + nx * off, y, z0 + uz * s + nz * off];
+      const step = 1.5;
+      const count = Math.max(1, Math.ceil(len / step));
+      for (const side of [1, -1]) {
+        // runs of the segment where the pavement is not crossing a side street
+        let runStart = -1;
+        for (let k = 0; k <= count; k += 1) {
+          const s = Math.min(len, k * step);
+          const p = at(s, side * (hw + PAVE_WIDTH / 2), 0);
+          const blocked = index.covered(p[0], p[2], PAVE_WIDTH / 2 + 0.2, ri);
+          if (!blocked && runStart < 0) runStart = s;
+          if ((blocked || k === count) && runStart >= 0) {
+            const end = blocked ? Math.max(runStart, s - step) : s;
+            if (end - runStart > 1) {
+              const o0 = side * hw, o1 = side * (hw + PAVE_WIDTH);
+              pushQuad(chunk, at(runStart, o0, KERB_HEIGHT), at(end, o0, KERB_HEIGHT), at(end, o1, KERB_HEIGHT), at(runStart, o1, KERB_HEIGHT), PAVEMENT, up);
+              pushQuad(chunk, at(runStart, o0, 0.04), at(end, o0, 0.04), at(end, o0, KERB_HEIGHT), at(runStart, o0, KERB_HEIGHT), KERB, shadeFor(-nx * side, 0, -nz * side));
+            }
+            runStart = -1;
+          }
+        }
+      }
+      // dashed centre line on roads at least 6 m wide
+      if (hw >= 3) {
+        for (let s = 1; s + 2 < len; s += 7) {
+          const mx = x0 + ux * (s + 1), mz = z0 + uz * (s + 1);
+          if (index.covered(mx, mz, 1.5, ri)) continue;
+          pushQuad(chunk, at(s, -0.09, 0.05), at(s + 2, -0.09, 0.05), at(s + 2, 0.09, 0.05), at(s, 0.09, 0.05), PAINT, up);
+        }
+      }
+    }
+  });
 }
 
 // ---------- scenery: parked cars, trees, gravestones, pumpkins ----------
@@ -345,11 +604,16 @@ function carTemplate(colorIndex: number): THREE.BufferGeometry {
   return template(`car${colorIndex}`, () => {
     const c = CAR_COLORS[colorIndex % CAR_COLORS.length]!;
     const s = new Shape();
-    s.box(1.9, 0.75, 4.3, c, { p: [0, 0.62, 0] }); // body (length along +Z)
-    s.box(1.62, 0.6, 2.2, c, { p: [0, 1.28, -0.2] }); // cabin
-    s.box(1.66, 0.34, 2.0, 0x23283a, { p: [0, 1.3, -0.2] }); // windows
-    for (const sx of [-0.95, 0.95]) for (const sz of [-1.4, 1.4]) s.cyl(0.36, 0.36, 0.3, 8, 0x14141c, { p: [sx, 0.36, sz], r: [0, 0, Math.PI / 2] });
+    s.box(1.9, 0.62, 4.3, c, { p: [0, 0.6, 0] }); // body (length along +Z)
+    s.box(1.8, 0.14, 4.4, 0x1a1a22, { p: [0, 0.3, 0] }); // bumper line and sills
+    s.cyl(0.7, 1.0, 0.62, 4, c, { p: [0, 1.2, -0.2], r: [0, Math.PI / 4, 0], s: [1.2, 1, 1.5] }); // tapered cabin
+    s.cyl(0.7, 1.0, 0.5, 4, 0x23283a, { p: [0, 1.22, -0.2], r: [0, Math.PI / 4, 0], s: [1.23, 1, 1.2] }); // windows
+    for (const sx of [-0.95, 0.95]) for (const sz of [-1.4, 1.4]) {
+      s.cyl(0.36, 0.36, 0.3, 8, 0x14141c, { p: [sx, 0.36, sz], r: [0, 0, Math.PI / 2] });
+      s.cyl(0.18, 0.18, 0.32, 6, 0xa8abb8, { p: [sx, 0.36, sz], r: [0, 0, Math.PI / 2] }, true); // hubcap
+    }
     s.box(1.3, 0.14, 0.08, 0xfff1b8, { p: [0, 0.78, 2.16] }); // headlights
+    s.box(1.5, 0.12, 0.08, 0xc02424, { p: [0, 0.78, -2.16] }); // tail lights
     return s.build();
   });
 }
@@ -360,9 +624,29 @@ function decorTemplate(kind: number, seed: number): THREE.BufferGeometry {
   return template(`decor${kind}-${variant}`, () => {
     const s = new Shape();
     if (kind === 0) {
-      s.cyl(0.16, 0.26, 2.4, 5, 0x4a3426, { p: [0, 1.2, 0] }, true);
-      s.ico(1.5, 0, leaf, { p: [0, 3.3, 0], s: [1, 0.85, 1] });
-      s.ico(1.0, 0, new THREE.Color(leaf).lerp(new THREE.Color(0xffffff), 0.18).getHex(), { p: [0.3, 4.3, 0.1] });
+      if (variant === 1) {
+        // a palm: a leaning trunk with a crown of drooping fronds
+        const trunk = 0x6b5338;
+        s.tube([[0, 0, 0], [0.25, 2.2, 0.1], [0.1, 4.4, 0.25], [-0.2, 6.0, 0.3]], 0.3, 0.16, trunk, 5, 8);
+        for (let ring = 0; ring < 3; ring += 1) {
+          s.cyl(0.33 - ring * 0.03, 0.33 - ring * 0.03, 0.12, 5, 0x4f3d28, { p: [0.2 - ring * 0.13, 1.8 + ring * 1.7, 0.1 + ring * 0.07] }, true); // trunk rings
+        }
+        const frond = 0x3f8a52;
+        for (let k = 0; k < 7; k += 1) {
+          const a = (k / 7) * Math.PI * 2;
+          const dx = Math.sin(a), dz = Math.cos(a);
+          s.tube([[-0.2, 6.0, 0.3], [-0.2 + dx * 1.2, 6.7, 0.3 + dz * 1.2], [-0.2 + dx * 2.5, 6.0, 0.3 + dz * 2.5], [-0.2 + dx * 3.1, 4.9, 0.3 + dz * 3.1]], 0.32, 0.03, k % 2 === 0 ? frond : 0x57a064, 4, 5);
+        }
+        s.ico(0.3, 0, 0x6b4a2a, { p: [-0.2, 5.8, 0.3] }); // coconuts
+      } else {
+        s.cyl(0.16, 0.26, 2.4, 5, 0x4a3426, { p: [0, 1.2, 0] }, true);
+        const light = new THREE.Color(leaf).lerp(new THREE.Color(0xffffff), 0.18).getHex();
+        const dark = new THREE.Color(leaf).lerp(new THREE.Color(0x101820), 0.25).getHex();
+        s.ico(1.5, 0, dark, { p: [0, 3.2, 0], s: [1.05, 0.8, 1.05] });
+        s.ico(1.1, 0, leaf, { p: [-0.7, 3.9, 0.3] });
+        s.ico(1.0, 0, light, { p: [0.55, 4.3, -0.2] });
+        s.ico(0.7, 0, light, { p: [0.1, 5.0, 0.4] });
+      }
     } else if (kind === 1) {
       const wood = 0x2f2a33;
       s.cyl(0.1, 0.28, 3.4, 5, wood, { p: [0, 1.7, 0] }, true);
@@ -394,8 +678,8 @@ function lampGeometry(): THREE.BufferGeometry {
   if (lampTemplate) return lampTemplate;
   const s = new Shape();
   const metal = 0x3d4054;
-  s.cyl(0.2, 0.26, 0.5, 6, metal, { p: [0, 0.25, 0] }); // base
-  s.cyl(0.07, 0.11, 5.7, 6, metal, { p: [0, 3.1, 0] }); // pole
+  s.cyl(0.2, 0.26, 0.5, 6, metal, { p: [0, 0.25, 0] }, true); // base
+  s.cyl(0.07, 0.11, 5.7, 6, metal, { p: [0, 3.1, 0] }, true); // pole
   s.box(1.5, 0.09, 0.09, metal, { p: [0.7, 5.95, 0] }); // arm
   s.box(0.2, 0.2, 0.2, metal, { p: [0, 5.9, 0] }); // joint
   s.box(0.62, 0.12, 0.34, 0xfff1b8, { p: [1.35, 5.84, 0] }); // lamp head (drawn bright: it is the light)
@@ -442,6 +726,7 @@ export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
     const m = new THREE.Matrix4().makeRotationY(Math.atan2(ux, uz)).setPosition(f.cx, 0, f.cz);
     chunkOf(chunks, f.cx, f.cz).cars.push(carTemplate(b.car - 1).clone().applyMatrix4(m));
   });
+  addStreet(map, chunks);
   const decorData = map.decor ?? [];
   for (let k = 0; k + 3 < decorData.length; k += 4) {
     const x = decorData[k]! / 10, z = decorData[k + 1]! / 10, kind = decorData[k + 2]!, seed = decorData[k + 3]!;
@@ -470,7 +755,7 @@ export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
   const lampMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   const glow = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
   const out: THREE.Object3D[] = [];
-  const merge = (geos: THREE.BufferGeometry[], material: THREE.Material, order = 0): void => {
+  const merge = (geos: THREE.BufferGeometry[], material: THREE.Material, order = 0, name = ""): void => {
     if (geos.length === 0) return;
     const merged = mergeGeometries(geos, false);
     for (const g of geos) g.dispose();
@@ -478,16 +763,18 @@ export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
     merged.computeBoundingSphere();
     const mesh = new THREE.Mesh(merged, material);
     mesh.renderOrder = order;
+    mesh.name = name;
     out.push(mesh);
   };
   for (const c of chunks.values()) {
-    merge(c.walls, wallMaterial);
-    merge(c.roofs, solid);
-    merge(c.signs, solid); // shop signs dissolve with their wall
-    merge(c.cars, solid); // parked cars can dissolve too, so they never hide a monster
-    merge(c.props, lampMaterial); // trees and graves stay put
-    merge(c.lamps, lampMaterial); // lamp posts never dissolve (only buildings do)
-    merge(c.pools, glow, 2);
+    merge(c.walls, wallMaterial, 0, "walls");
+    merge(c.roofs, solid, 0, "roofs");
+    merge(c.signs, solid, 0, "signs"); // shop signs dissolve with their wall
+    merge(c.cars, solid, 0, "cars"); // parked cars can dissolve too, so they never hide a monster
+    merge(c.props, lampMaterial, 0, "props"); // trees and graves stay put
+    merge(c.lamps, lampMaterial, 0, "lamps"); // lamp posts never dissolve (only buildings do)
+    merge(c.street, lampMaterial, 0, "street");
+    merge(c.pools, glow, 2, "pools");
   }
   return out;
 }

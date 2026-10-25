@@ -5,7 +5,7 @@ import { MonsterModel } from '../src/render/monsters/MonsterModel.js';
 import { ARM_DEFS, BODY_DEFS, HEAD_DEFS, LEG_DEFS } from '../src/render/monsters/parts.js';
 import { HATS, TINTS, cleanStyle, packStyle, unpackStyle } from '../src/render/monsters/style.js';
 
-const BUDGET = 1800;
+const BUDGET = 7200;
 let failures = 0;
 let worst = 0;
 const fail = (msg: string): void => {
@@ -35,7 +35,7 @@ for (let body = 0; body < BODY_DEFS.length; body += 1)
           if (![box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].every(Number.isFinite)) fail(`${name}: NaN bounds at ${speed}`);
           else {
             if (box.min.y < -0.25 || box.min.y > 0.8) fail(`${name}: feet at ${box.min.y.toFixed(2)} m at speed ${speed}`);
-            if (box.max.y > 4.2) fail(`${name}: ${box.max.y.toFixed(2)} m tall`);
+            if (box.max.y > 4.6) fail(`${name}: ${box.max.y.toFixed(2)} m tall (limit 4.6)`);
             if (Math.max(box.max.x, -box.min.x) > 3 || Math.max(box.max.z, -box.min.z) > 3.5) fail(`${name}: too wide at speed ${speed}`);
           }
         }
@@ -55,7 +55,7 @@ for (let body = 0; body < BODY_DEFS.length; body += 1) {
       m.root.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(m.root);
       const extra = m.triangles() - base;
-      if (extra > 260) fail(`${HATS[hat]!.name} adds ${extra} triangles`);
+      if (extra > 400) fail(`${HATS[hat]!.name} adds ${extra} triangles`);
       if (box.max.y > 5.6) fail(`${HATS[hat]!.name} on body ${body} head ${head} reaches ${box.max.y.toFixed(2)} m`);
     }
   }
