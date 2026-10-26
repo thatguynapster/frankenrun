@@ -6,10 +6,10 @@ import { CHECKPOINT_RADIUS, HEADS } from '../sim/parts.js';
 import { MonsterModel, createPartProp, type BuildIds, type PartSlot } from './monsters/MonsterModel.js';
 import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
 import { makeIcons } from './partIcons.js';
-import { buildCity, cutaway } from './city.js';
+import { buildCity, cullCity, cutaway } from './city.js';
 import { Particles } from './Particles.js';
 import { Atmosphere } from './atmosphere.js';
-import { themeFor, type RouteTheme } from '../routes.js';
+import { routeInfo, themeFor, type RouteTheme } from '../routes.js';
 import { DEFAULT_STYLE, type Style } from './monsters/style.js';
 import type { SoundId } from '../audio/manifest.js';
 
@@ -61,6 +61,8 @@ export class RaceView {
   private iconCache: Record<string, string> | undefined;
   private readonly worldBackground = new THREE.Color(0x232b52);
   private worldFog = new THREE.Fog(0x232b52, 50, 230);
+  /** The city's merged chunks, so those beyond the fog can be skipped each frame. */
+  private cityMeshes: THREE.Object3D[] = [];
   private hemi: THREE.HemisphereLight;
   private moonLight: THREE.DirectionalLight;
   private atmosphere: Atmosphere;
@@ -244,7 +246,8 @@ export class RaceView {
     });
 
     // Buildings with painted walls, lit windows and roofs, plus street lamps (see city.ts), merged per 100 m chunk.
-    for (const object of buildCity(map, themeFor(map.id).cityTint)) group.add(object);
+    this.cityMeshes = buildCity(map, themeFor(map.id).cityTint, routeInfo(map.id)?.city);
+    for (const object of this.cityMeshes) group.add(object);
 
     // Walls and the boundary.
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x6a5a86, flatShading: true });
@@ -926,7 +929,19 @@ export class RaceView {
     return this.iconCache;
   }
 
+  /** Milliseconds this frame spent preparing the scene (monsters, effects, camera) and handing it to the GPU; summed by the caller. */
+  readonly timing = { prep: 0, submit: 0 };
+
+  /** Blocks until the GPU has finished the queued frame and returns how long that took (a rough GPU time; use sparingly). */
+  gpuWaitMs(): number {
+    const gl = this.renderer.getContext();
+    const t0 = performance.now();
+    gl.finish();
+    return performance.now() - t0;
+  }
+
   render(frame: GameProjection | undefined, localSlot: number, dtSeconds: number, showColliders = false, lobby = false): void {
+    const renderStart = performance.now();
     this.updateColliderLines(frame, showColliders && !lobby);
     if (frame !== undefined && lobby) {
       while (this.cars.length < frame.players.length) this.cars.push(this.makeCar(this.cars.length));
@@ -978,7 +993,11 @@ export class RaceView {
         });
       });
     }
+    if (this.cityMeshes.length > 0) cullCity(this.cityMeshes, this.camera.position.x, this.camera.position.z, this.worldFog.far);
+    const submitStart = performance.now();
     this.renderer.render(this.scene, this.camera);
+    this.timing.prep += submitStart - renderStart;
+    this.timing.submit += performance.now() - submitStart;
   }
 
   /** Render-resolution steps: index 0 is the sharpest. Each step down cuts the pixels drawn substantially. */

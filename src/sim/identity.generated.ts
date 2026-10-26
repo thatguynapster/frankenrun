@@ -7,7 +7,7 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "be97fdfe43c6ed87de618fa359188e3c71af11c1af83252fa83cc03052409ee0"
+  "engineIdentityHash": "2eb3dddbfbde47d3b3146306f2d8ba8741710c5346aedfa564c93074236d5429"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */
@@ -21,6 +21,21 @@ export const mapAssets: readonly { name: string; digest: string; byteLength: num
     "name": "map-jamestown",
     "digest": "2f00c2254439aa90e992e83a9ea3505a93e95886c5c0535ca0590ff7f54ef8bf",
     "byteLength": 764198
+  },
+  {
+    "name": "map-london-piccadilly",
+    "digest": "96e1b15ba141071db9198c106438160e128f4aecf11a45ce62076a2a71a5d6d7",
+    "byteLength": 1720822
+  },
+  {
+    "name": "map-london-shoreditch",
+    "digest": "c6aab6ef5b944f77de5bfd25531629e51729f0de2c89ffc8a56611ac0bb923d4",
+    "byteLength": 756135
+  },
+  {
+    "name": "map-london-westminster-soho",
+    "digest": "a50d3e2a82f603cc233d415dfe9ef3b7d3f6440412b1af21bd55a746aaf1cd4a",
+    "byteLength": 995817
   },
   {
     "name": "map-osu-backstreets",

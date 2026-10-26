@@ -11,8 +11,14 @@ if (!def) throw new Error(`unknown route ${id}`);
 const PAD_M = Number(process.env['PAD'] ?? 250);
 
 const g = loadGraph(def.roadsFile);
-const a = nearestNode(g, project(...def.start)), b = nearestNode(g, project(...def.end));
-const r = route(g, a, b);
+// Optional via points keep the route on the streets we want (the shortest path can slip into alleys).
+const stops = [def.start, ...(def.via ?? []), def.end].map((p) => nearestNode(g, project(...p)));
+let r: ReturnType<typeof route> = { nodes: [], length: 0 } as unknown as ReturnType<typeof route>;
+for (let i = 0; i + 1 < stops.length; i += 1) {
+  const leg = route(g, stops[i]!, stops[i + 1]!);
+  if (!leg) throw new Error('no route');
+  r = r === null || r.nodes.length === 0 ? leg : { ...leg, nodes: [...r.nodes, ...leg.nodes.slice(1)], length: r.length + leg.length };
+}
 if (!r) throw new Error('no route');
 const poly = r.nodes.map((n) => g.pts.get(n)!);
 const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);

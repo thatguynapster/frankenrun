@@ -2,8 +2,8 @@
 // window.cityView.go(route, t, dist, height, yawOffset) puts the camera on the route. Not part of the game build.
 import * as THREE from 'three';
 import type { MapData } from './sim/mapdata.js';
-import { buildCity } from './render/city.js';
-import { THEMES } from './routes.js';
+import { buildCity, cullCity } from './render/city.js';
+import { THEMES, routeInfo } from './routes.js';
 
 const hideOverlay = (): void => document.getElementById('rundot-game-sandbox-loading')?.remove();
 hideOverlay();
@@ -15,10 +15,12 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 600);
 let world: THREE.Group | undefined;
+let cityMeshes: THREE.Object3D[] = [];
+let fogFar = 230;
 let map: MapData | undefined;
 
 async function load(id: string): Promise<void> {
-  const res = await fetch(`/cdn-assets/accra/${id}.map.json.gz`);
+  const res = await fetch(`/cdn-assets/${routeInfo(id)?.city ?? "accra"}/${id}.map.json.gz`);
   let bytes = new Uint8Array(await res.arrayBuffer());
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
     bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
@@ -34,20 +36,24 @@ async function load(id: string): Promise<void> {
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((b.minX + b.maxX) / 20, 0, (b.minZ + b.maxZ) / 20);
   world.add(ground);
-  const road = new THREE.MeshBasicMaterial({ color: 0x6a728f });
+  // one merged ribbon mesh, as the race view draws the roads
+  const positions: number[] = [];
   for (const r of map.roads) {
+    const hw = r.hw / 10;
     for (let i = 0; i + 3 < r.pts.length; i += 2) {
       const x0 = r.pts[i]! / 10, z0 = r.pts[i + 1]! / 10, x1 = r.pts[i + 2]! / 10, z1 = r.pts[i + 3]! / 10;
-      const len = Math.hypot(x1 - x0, z1 - z0);
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(r.hw / 5, len), road);
-      m.rotation.set(-Math.PI / 2, 0, -Math.atan2(x1 - x0, z1 - z0));
-      m.rotation.order = 'YXZ';
-      m.rotation.set(-Math.PI / 2, Math.atan2(x1 - x0, z1 - z0), 0);
-      m.position.set((x0 + x1) / 2, 0.02, (z0 + z1) / 2);
-      world.add(m);
+      const len = Math.hypot(x1 - x0, z1 - z0) || 1;
+      const nx = (-(z1 - z0) / len) * hw, nz = ((x1 - x0) / len) * hw;
+      const y = 0.04;
+      positions.push(x0 + nx, y, z0 + nz, x1 + nx, y, z1 + nz, x0 - nx, y, z0 - nz, x1 + nx, y, z1 + nz, x1 - nx, y, z1 - nz, x0 - nx, y, z0 - nz);
     }
   }
-  for (const o of buildCity(map, theme.cityTint)) world.add(o);
+  const roadGeo = new THREE.BufferGeometry();
+  roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  world.add(new THREE.Mesh(roadGeo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
+  cityMeshes = buildCity(map, theme.cityTint, routeInfo(id)?.city);
+  fogFar = theme.fogFar;
+  for (const o of cityMeshes) world.add(o);
   scene.add(world);
 }
 
@@ -82,6 +88,17 @@ const view = {
     camera.lookAt(x + Math.sin(a) * 12, 3, z + Math.cos(a) * 12);
   },
   triangles,
+  /** Average milliseconds per frame over n frames, waiting for the GPU each time. */
+  bench(n = 30): number {
+    const gl = renderer.getContext();
+    const t0 = performance.now();
+    cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
+    for (let i = 0; i < n; i += 1) {
+      renderer.render(scene, camera);
+      gl.finish();
+    }
+    return (performance.now() - t0) / n;
+  },
   /** Camera near world point (x, z) looking toward (lx, lz). */
   look(x: number, z: number, lx: number, lz: number, height = 3): void {
     camera.position.set(x, height, z);
@@ -105,6 +122,7 @@ const view = {
 (window as unknown as { cityView: typeof view }).cityView = view;
 
 function frame(): void {
+  cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
   renderer.render(scene, camera);
   info.textContent = `${Math.round(triangles()).toLocaleString()} triangles, ${renderer.info.render.calls} draw calls`;
   requestAnimationFrame(frame);

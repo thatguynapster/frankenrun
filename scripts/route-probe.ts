@@ -27,7 +27,7 @@ function pilot(slot: number): GameInput {
   const v = projectGame(state, prep).players[slot]!;
   // Advance only once the car is actually at the next vertex, so corners are never skipped or cut.
   let best = progress[slot]!;
-  while (best + 1 < polyline.length - 1 && Math.hypot(polyline[best + 1]!.x - v.x, polyline[best + 1]!.z - v.z) < 12) best += 1;
+  while (best + 1 < polyline.length - 1 && Math.hypot(polyline[best + 1]!.x - v.x, polyline[best + 1]!.z - v.z) < Number(process.env['ADV'] ?? 12)) best += 1;
   progress[slot] = best;
   const look = Math.max(Number(process.env['LOOKMIN'] ?? 10), v.speed * 0.9);
   let target = polyline[polyline.length - 1]!;

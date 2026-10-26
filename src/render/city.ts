@@ -12,10 +12,31 @@ import { Shape } from './monsters/shapes.js';
 
 const CHUNK = 100; // metres: geometry is merged per chunk so the camera can skip whole chunks
 
-const FACADES = [0xe8d9b5, 0xd9a441, 0xc7704f, 0xa9c9a4, 0x8fb4d8, 0xe3a6b4, 0xf0ebe0, 0xcfa27a, 0x9fd0c8];
-const ROOFS = [0x9c4a3a, 0x6d7a86, 0xa3552f, 0x4f6f6a, 0x7a6a8a];
-const FLAT_ROOF = 0x8c8f99;
-const SIGN_COLORS = [0xff4fa3, 0x41e0ff, 0xffd23b, 0x7dff6a, 0xff7a2e, 0xb06bff];
+/** How a city's buildings look: wall and roof colours, how common signs, chimneys and rooftop tanks are. */
+export interface CityStyle {
+  readonly facades: readonly number[];
+  readonly roofs: readonly number[];
+  readonly flatRoof: number;
+  readonly signs: readonly number[];
+  readonly signChance: number;
+  readonly chimneyChance: number;
+  readonly tankChance: number;
+}
+
+const STYLES: Readonly<Record<string, CityStyle>> = {
+  // Accra: sun-faded pastel plaster and tin roofs
+  accra: { facades: [0xe8d9b5, 0xd9a441, 0xc7704f, 0xa9c9a4, 0x8fb4d8, 0xe3a6b4, 0xf0ebe0, 0xcfa27a, 0x9fd0c8], roofs: [0x9c4a3a, 0x6d7a86, 0xa3552f, 0x4f6f6a, 0x7a6a8a], flatRoof: 0x8c8f99, signs: [0xff4fa3, 0x41e0ff, 0xffd23b, 0x7dff6a, 0xff7a2e, 0xb06bff], signChance: 0.4, chimneyChance: 0.25, tankChance: 0.3 },
+  // London: London stock brick, red brick and cream stucco under slate, with a chimney on most houses
+  london: { facades: [0xb5654a, 0xa05a45, 0xc98a5e, 0xd9c7a0, 0x8d7a6a, 0xe8dcc0, 0x9a6b52, 0x6f7a86], roofs: [0x4a5668, 0x5a4a4a, 0x3d4658, 0x6b3f36], flatRoof: 0x6f7480, signs: [0xd9242f, 0x2f6bd9, 0x2fa05a, 0xffd23b, 0xf0e6d8], signChance: 0.35, chimneyChance: 0.65, tankChance: 0.15 },
+  // New York: brick and brownstone, flat roofs with water towers
+  newyork: { facades: [0x9a4e3a, 0x7a4636, 0xb26a45, 0x8a6a56, 0xc7a070, 0x6f6a78, 0xa8574a, 0x5f6a7a], roofs: [0x5a5560, 0x4a4a55], flatRoof: 0x4f5360, signs: [0xff3b3b, 0xffd23b, 0x41e0ff, 0xff7a2e, 0xf0f0ff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.55 },
+  // Tokyo: pale concrete and tile, flat roofs, signs everywhere
+  tokyo: { facades: [0xd8d8de, 0xbfc4cf, 0xe8e2d4, 0x9aa6b8, 0xcfd6c8, 0xb8a89a, 0xe0d0d6, 0x8fa0a8], roofs: [0x4a5058, 0x3a4a5a, 0x5a4a44], flatRoof: 0x7a808c, signs: [0xff2f8a, 0x2fe0ff, 0xffe02f, 0x6aff4f, 0xff5a2f, 0xb04fff, 0xffffff], signChance: 0.75, chimneyChance: 0.02, tankChance: 0.4 },
+  // Mexico City: strong colour: terracotta, ochre, pink, turquoise and cobalt
+  mexicocity: { facades: [0xd9604a, 0xe8a23a, 0xe36a9a, 0x2fb0b8, 0x3a6ad0, 0xf0d070, 0xc9503a, 0x7bc86a, 0xe8d9b5], roofs: [0xb04a2f, 0x8a3f2f, 0x6a6f7a], flatRoof: 0x9a8f86, signs: [0xff4f7a, 0xffd23b, 0x41e0b0, 0xff7a2e, 0x6a9bff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.5 },
+};
+let style: CityStyle = STYLES['accra']!;
+const FACADES_OF = (): readonly number[] => style.facades;
 
 const h32 = (n: number): number => {
   let x = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
@@ -263,7 +284,7 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   if (f === undefined) return;
   const height = Math.max(2.5, b.h / 10);
   const seed = Math.floor(f.cx * 13 + f.cz * 7) + i * 101;
-  const tint = new THREE.Color(FACADES[h32(seed) % FACADES.length]!);
+  const tint = new THREE.Color(FACADES_OF()[h32(seed) % FACADES_OF().length]!);
   const n = f.xs.length;
   const sign = f.area >= 0 ? 1 : -1; // winding, so the wall normal points outward
   const small = Math.abs(f.area) < 220 && height < 9 && inside(f, f.cx, f.cz);
@@ -337,7 +358,7 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   if (wp.length > 0) chunk.walls.push(geometryFrom(wp, wc, wu));
 
   // A glowing shop sign, a door and an awning on the longest wall of some buildings (street level, facing out).
-  if (rand01(seed + 21) < 0.4 && height < 22) {
+  if (rand01(seed + 21) < style.signChance && height < 22) {
     let bk = -1, blen = 0;
     for (let k = 0; k < n; k += 1) {
       const j = (k + 1) % n;
@@ -352,7 +373,7 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       const w = Math.min(3.6, blen * 0.55), h = 0.8, y0 = 2.55;
       const t = 0.3 + 0.4 * rand01(seed + 33);
       const cx = x0 + (x1 - x0) * t, cz = z0 + (z1 - z0) * t;
-      const neon = new THREE.Color(SIGN_COLORS[h32(seed + 44) % SIGN_COLORS.length]!);
+      const neon = new THREE.Color(style.signs[h32(seed + 44) % style.signs.length]!);
       const dark = new THREE.Color(0x14121f);
       const sg = new WallBuilder();
       const at = (along: number, off: number, y: number): P3 => [cx + ux * along + nx * off, y, cz + uz * along + nz * off];
@@ -369,7 +390,7 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       const dw = 0.55;
       const doorOff = 0.07;
       push(at(-dw, doorOff, 0.05), at(dw, doorOff, 0.05), at(dw, doorOff, 2.15), at(-dw, doorOff, 2.15), new THREE.Color(0x2a2336), shadeFor(nx, 0, nz) * 0.9);
-      const awn = new THREE.Color(SIGN_COLORS[h32(seed + 77) % SIGN_COLORS.length]!).lerp(new THREE.Color(0x201a30), 0.35);
+      const awn = new THREE.Color(style.signs[h32(seed + 77) % style.signs.length]!).lerp(new THREE.Color(0x201a30), 0.35);
       const aw = Math.min(w * 0.5, 1.4);
       for (let s = 0; s < 2; s += 1) {
         const a0 = -aw + s * aw, a1 = a0 + aw;
@@ -382,7 +403,7 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   // roof
   const rp: number[] = [], rc: number[] = [];
   if (small) {
-    const roof = new THREE.Color(ROOFS[h32(seed + 5) % ROOFS.length]!);
+    const roof = new THREE.Color(style.roofs[h32(seed + 5) % style.roofs.length]!);
     const rise = 1.2 + Math.min(2, Math.sqrt(Math.abs(f.area)) * 0.1);
     const eave = 0.45; // the roof overhangs the walls
     const out = (x: number, z: number): [number, number] => {
@@ -409,12 +430,12 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       }
     }
     // a chimney on some houses
-    if (rand01(seed + 13) < 0.25) {
+    if (rand01(seed + 13) < style.chimneyChance) {
       const cxp = f.cx + (f.xs[0]! - f.cx) * 0.35, czp = f.cz + (f.zs[0]! - f.cz) * 0.35;
       if (inside(f, cxp, czp)) addProp(rp, rc, 'chimney', cxp, height + rise * 0.55, czp);
     }
   } else {
-    const flat = new THREE.Color(FLAT_ROOF).lerp(new THREE.Color(FACADES[h32(seed) % FACADES.length]!), 0.15);
+    const flat = new THREE.Color(style.flatRoof).lerp(new THREE.Color(FACADES_OF()[h32(seed) % FACADES_OF().length]!), 0.15);
     const shade = shadeFor(0, 1, 0);
     const contour = f.xs.map((x, k) => new THREE.Vector2(x, f.zs[k]!));
     const tris = THREE.ShapeUtils.triangulateShape(contour, []);
@@ -431,8 +452,8 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
     // rooftop clutter on the bigger roofs: a water tank, an air-conditioning box, a stairwell
     if (inside(f, f.cx, f.cz) && Math.abs(f.area) > 60) {
       const r = rand01(seed + 9);
-      if (r < 0.3) addProp(rp, rc, 'tank', f.cx, height, f.cz);
-      else if (r < 0.6) addProp(rp, rc, 'stair', f.cx, height, f.cz);
+      if (r < style.tankChance) addProp(rp, rc, 'tank', f.cx, height, f.cz);
+      else if (r < style.tankChance + 0.3) addProp(rp, rc, 'stair', f.cx, height, f.cz);
       if (rand01(seed + 19) < 0.5) {
         const ax = f.cx + (f.xs[1 % n]! - f.cx) * 0.4, az = f.cz + (f.zs[1 % n]! - f.cz) * 0.4;
         if (inside(f, ax, az)) addProp(rp, rc, 'ac', ax, height, az);
@@ -709,7 +730,8 @@ function poolGeometry(): THREE.BufferGeometry {
 }
 
 /** Everything that makes the city look like a city: returns the meshes to add to the world group. */
-export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
+export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.Object3D[] {
+  style = STYLES[city] ?? STYLES['accra']!;
   const chunks = new Map<string, Chunk>();
   map.buildings.forEach((b, i) => {
     if (b.car !== undefined) return; // parked cars are drawn below
@@ -755,26 +777,48 @@ export function buildCity(map: MapData, tint = 0xffffff): THREE.Object3D[] {
   const lampMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   const glow = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
   const out: THREE.Object3D[] = [];
-  const merge = (geos: THREE.BufferGeometry[], material: THREE.Material, order = 0, name = ""): void => {
+  /** Chunk key -> its centre, so the view can skip chunks that lie beyond the fog. */
+  const merge = (geos: THREE.BufferGeometry[], material: THREE.Material, key: string, order = 0, name = '', keepUv = false): void => {
     if (geos.length === 0) return;
-    const merged = mergeGeometries(geos, false);
-    for (const g of geos) g.dispose();
+    // everything merged into one mesh must carry the same attributes
+    const same = geos.map((g) => {
+      const flat = g.index ? g.toNonIndexed() : g;
+      if (flat !== g) g.dispose();
+      if (!keepUv && flat.getAttribute('uv')) flat.deleteAttribute('uv');
+      if (flat.getAttribute('normal')) flat.deleteAttribute('normal');
+      return flat;
+    });
+    const merged = mergeGeometries(same, false);
+    for (const g of same) g.dispose();
     if (merged === null) return;
     merged.computeBoundingSphere();
     const mesh = new THREE.Mesh(merged, material);
     mesh.renderOrder = order;
     mesh.name = name;
+    const [ix, iz] = key.split(',').map(Number) as [number, number];
+    mesh.userData['cx'] = (ix + 0.5) * CHUNK;
+    mesh.userData['cz'] = (iz + 0.5) * CHUNK;
     out.push(mesh);
   };
-  for (const c of chunks.values()) {
-    merge(c.walls, wallMaterial, 0, "walls");
-    merge(c.roofs, solid, 0, "roofs");
-    merge(c.signs, solid, 0, "signs"); // shop signs dissolve with their wall
-    merge(c.cars, solid, 0, "cars"); // parked cars can dissolve too, so they never hide a monster
-    merge(c.props, lampMaterial, 0, "props"); // trees and graves stay put
-    merge(c.lamps, lampMaterial, 0, "lamps"); // lamp posts never dissolve (only buildings do)
-    merge(c.street, lampMaterial, 0, "street");
-    merge(c.pools, glow, 2, "pools");
+  for (const [key, c] of chunks) {
+    merge(c.walls, wallMaterial, key, 0, 'walls', true);
+    // roofs, shop signs and parked cars all dissolve with the cut-away, so they share one mesh
+    merge([...c.roofs, ...c.signs, ...c.cars], solid, key, 0, 'solid');
+    // trees, graves, lamp posts and pavements stay put (only buildings dissolve)
+    merge([...c.props, ...c.lamps, ...c.street], lampMaterial, key, 0, 'scenery');
+    merge(c.pools, glow, key, 2, 'pools');
   }
   return out;
+}
+
+/** Hides the city's chunks that lie wholly beyond `range` metres of (x, z): past the fog they cannot be seen anyway. */
+export function cullCity(meshes: readonly THREE.Object3D[], x: number, z: number, range: number): void {
+  const reach = range + CHUNK * 0.75; // half a chunk's diagonal, with a little to spare
+  const limit = reach * reach;
+  for (const m of meshes) {
+    const cx = m.userData['cx'] as number | undefined, cz = m.userData['cz'] as number | undefined;
+    if (cx === undefined || cz === undefined) continue;
+    const dx = cx - x, dz = cz - z;
+    m.visible = dx * dx + dz * dz <= limit;
+  }
 }

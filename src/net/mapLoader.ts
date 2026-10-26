@@ -1,5 +1,6 @@
 import RundotGameAPI from '@series-inc/rundot-game-sdk/api';
 import type { MapData } from '../sim/mapdata.js';
+import { routeInfo } from '../routes.js';
 import { registerMapBytes } from '../sim/runtime.js';
 import { getPreparedMap } from '../sim/world.js';
 
@@ -23,7 +24,7 @@ export function ensureMap(id: string): Promise<MapData> {
 }
 
 async function load(id: string): Promise<MapData> {
-  const blob = await RundotGameAPI.cdn.fetchAsset(`accra/${id}.map.json.gz`);
+  const blob = await RundotGameAPI.cdn.fetchAsset(`${routeInfo(id)?.city ?? 'accra'}/${id}.map.json.gz`);
   let bytes = new Uint8Array(await blob.arrayBuffer());
   // Some hosts (including the dev server) send .gz with Content-Encoding: gzip, so the browser has already
   // decompressed it; others hand over the raw gzip. Only decompress when the gzip magic bytes are present.

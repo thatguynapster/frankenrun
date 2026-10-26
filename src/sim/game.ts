@@ -76,7 +76,7 @@ import {
   type LegsDef,
 } from './parts.js';
 import { BOT_RESCUE_TICKS, botInput, rescuePose } from './bot.js';
-import type { PreparedMap } from './world.js';
+import { CELL_M, type PreparedMap } from './world.js';
 
 export type Phase = 'BUILD' | 'COUNTDOWN' | 'RACING' | 'RESULTS';
 
@@ -660,7 +660,12 @@ function syncBuildings(
     if (body === undefined) continue;
     const key = prep.cellOf(body.x, body.z);
     const cx = Math.floor(key / 4096), cz = key % 4096;
-    for (let dx = -1; dx <= 1; dx += 1) for (let dz = -1; dz <= 1; dz += 1) wanted.add((cx + dx) * 4096 + (cz + dz));
+    // The car's own cell and the neighbour on the side it is nearer to, on each axis: a 2 x 2 block that always keeps at
+    // least half a cell (10 m) of loaded ground on every side. Physics cost grows with the colliders loaded, and in a dense
+    // city a 3 x 3 block held more than twice as many as the car could reach within a tick.
+    const sx = body.x / CELL_M - Math.floor(body.x / CELL_M) < 0.5 ? -1 : 1;
+    const sz = body.z / CELL_M - Math.floor(body.z / CELL_M) < 0.5 ? -1 : 1;
+    for (const dx of [0, sx]) for (const dz of [0, sz]) wanted.add((cx + dx) * 4096 + (cz + dz));
   }
   const next = [...wanted].sort((a, b) => a - b);
   if (next.length === active.length && next.every((k, i) => k === active[i])) return { world, activeCells: active };

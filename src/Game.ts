@@ -11,7 +11,7 @@ import { RaceView } from './render/RaceView.js';
 import { ARM_CLAWS, ARM_TENTACLES, DEFAULT_BUILD, DEFAULT_INPUT, HEAD_SLIME, type Build, type GameProjection } from './sim/game.js';
 import { ARM_PARTS, BODIES, HEAD_PARTS, LEG_PARTS, TICK_RATE } from './sim/parts.js';
 import type { MapData } from './sim/mapdata.js';
-import { ROUTES, featuredRoute } from './routes.js';
+import { ROUTES, featuredRoute, routesOf } from './routes.js';
 import { DEFAULT_STYLE, botStyle, cleanStyle, packStyle, unpackStyle, type Style } from './render/monsters/style.js';
 import { getPreparedMap } from './sim/world.js';
 import { TipCoach } from './tips.js';
@@ -107,6 +107,8 @@ export interface UiState {
   readonly lastSubmission: { readonly route: string; readonly ms: number; readonly result: Submission | null } | null;
   /** Set while the title screen is asking which route to race. */
   readonly picking: 'practice' | 'host' | null;
+  /** The city whose routes the picker is showing, or null while it asks which city. */
+  readonly pickCity: string | null;
   /** Index of the first of the three routes shown in the picker. */
   readonly routeOffset: number;
   /** Quick match's route of the day. */
@@ -189,6 +191,7 @@ export class Game {
   private invite: Invite | null = null;
   private picking: 'practice' | 'host' | null = null;
   private flyLoading = '';
+  private pickCity: string | null = null;
   private routeOffset = 0;
   private lobbyTab: UiState['lobbyTab'] = 'body';
   private board: UiState['board'] = null;
@@ -268,11 +271,27 @@ export class Game {
   private stallSince = 0;
   private lastPredicted = -1;
   private perfRollbacks = 0;
+  private perfMinimap = 0;
+  /** Frames slower than 33 ms and 66 ms this second, and the longest main-thread tasks (ms) the browser reported. */
+  private perfSlow = 0;
+  private perfVerySlow = 0;
+  private perfLongTask = 0;
+  private perfGpuMs = 0;
+  private longTaskObserver: PerformanceObserver | null = null;
   private unsubscribe: () => void;
 
   constructor(container: HTMLElement) {
     this.view = new RaceView(container);
     this.minimap = new Minimap(container.parentElement ?? container);
+    // Long main-thread tasks (the browser reports anything over 50 ms): a hitch the frame timer alone cannot explain.
+    try {
+      this.longTaskObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) this.perfLongTask += entry.duration;
+      });
+      this.longTaskObserver.observe({ entryTypes: ['longtask'] });
+    } catch {
+      this.longTaskObserver = null; // not supported in this browser
+    }
     this.unsubscribe = this.runner.subscribe((snap) => {
       this.snapshot = snap;
       if (snap.roomCode) this.lastRoom = snap.roomCode;
@@ -588,12 +607,19 @@ export class Game {
       this.gpuText = g.gpu.replace(/ANGLE \(|\)/g, '').slice(0, 42);
     }
     const g = this.view.gpuInfo();
-    return `${p.fps} fps · frame max ${Math.round(p.maxFrameMs)} ms · sim ${p.updateMs.toFixed(1)} ms (max ${Math.round(p.maxUpdateMs)}) · render ${this.perfRenderAvg().toFixed(1)} ms · ${p.ticksPerSec} ticks/s · rb ${p.rollbacksPerSec}/s · q${this.view.qualityLevel} ${g.width}x${g.height} · ${p.triangles} tris · ${this.gpuText}`;
+    const t = this.timingAvg;
+    const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+    return `${p.fps} fps · frame max ${Math.round(p.maxFrameMs)} ms · slow frames (>33 ms) ${this.perfSlowShown}, (>66 ms) ${this.perfVerySlowShown} · long tasks ${Math.round(this.perfLongTaskShown)} ms · q${this.view.qualityLevel} ${g.width}x${g.height}
+` +
+      `sim ${p.updateMs.toFixed(1)} ms (max ${Math.round(p.maxUpdateMs)}) · scene prep ${t.prep.toFixed(1)} ms · draw submit ${t.submit.toFixed(1)} ms · minimap ${t.minimap.toFixed(1)} ms · GPU wait ${this.perfGpuMs.toFixed(1)} ms · ${p.ticksPerSec} ticks/s · rb ${p.rollbacksPerSec}/s
+` +
+      `${p.triangles} tris · ${p.calls} calls · ${this.view.stats().geometries} geometries${heap ? ` · heap ${Math.round(heap.usedJSHeapSize / 1048576)} MB` : ''} · ${this.gpuText}`;
   }
 
-  private perfRenderAvg(): number {
-    return this.perf.renderMs;
-  }
+  private timingAvg = { prep: 0, submit: 0, minimap: 0 };
+  private perfSlowShown = 0;
+  private perfVerySlowShown = 0;
+  private perfLongTaskShown = 0;
 
   state(): UiState {
     const snap = this.snapshot;
@@ -612,6 +638,7 @@ export class Game {
       style: this.style,
       styles: this.styleTable(),
       picking: this.picking,
+      pickCity: this.pickCity,
       routeOffset: this.routeOffset,
       board: this.board,
       lastSubmission: this.lastSubmission,
@@ -846,13 +873,19 @@ export class Game {
     const r0 = performance.now();
     const lobbyNow = this.screen === 'play' && frame !== undefined && (frame.phase === 'BUILD' || frame.players[this.snapshot?.localSlot ?? 0]?.rematch === true);
     this.watchLobby(now);
+    const m0 = performance.now();
     this.minimap.draw(frame, this.snapshot?.localSlot ?? 0, this.screen === 'play' && !lobbyNow && this.minimap_);
+    this.perfMinimap += performance.now() - m0;
     this.view.setStyles(this.styleTable());
     if (this.screen === 'play') this.view.render(frame, this.snapshot?.localSlot ?? 0, dt / 1000, this.showColliders, lobbyNow);
     else this.renderTitleScene(dt / 1000);
     this.perfRender += performance.now() - r0;
     this.perfFrames += 1;
     if (dt > this.perfMaxFrame) this.perfMaxFrame = dt;
+    if (dt > 33) this.perfSlow += 1;
+    if (dt > 66) this.perfVerySlow += 1;
+    // Once a second, with the readout on, wait for the GPU to finish this frame to see how long it really took.
+    if (this.showInfo && now - this.perfSince >= 1000) this.perfGpuMs = this.view.gpuWaitMs();
     if (now - this.perfSince >= 1000) {
       const secs = (now - this.perfSince) / 1000;
       const rb = this.snapshot?.rollbackCount ?? 0;
@@ -868,6 +901,17 @@ export class Game {
         rollbacksPerSec: Math.round((rb - this.perfRollbacks) / secs),
         ticksPerSec: Math.round(((this.snapshot?.predictedThrough ?? 0) - this.perfTicks) / secs),
       };
+      const frames = Math.max(1, this.perfFrames);
+      this.timingAvg = { prep: this.view.timing.prep / frames, submit: this.view.timing.submit / frames, minimap: this.perfMinimap / frames };
+      this.view.timing.prep = 0;
+      this.view.timing.submit = 0;
+      this.perfMinimap = 0;
+      this.perfSlowShown = this.perfSlow;
+      this.perfVerySlowShown = this.perfVerySlow;
+      this.perfLongTaskShown = this.perfLongTask;
+      this.perfSlow = 0;
+      this.perfVerySlow = 0;
+      this.perfLongTask = 0;
       this.perfTicks = this.snapshot?.predictedThrough ?? 0;
       this.perfMaxFrame = 0;
       this.adaptQuality();
@@ -930,7 +974,7 @@ export class Game {
 
   /** The menu screens' own scene: the player's saved monster on the stage, or a flyover of the route being picked. */
   private renderTitleScene(dt: number): void {
-    const picked = this.screen === 'title' && this.picking !== null ? ROUTES[Math.min(this.routeOffset + 1, ROUTES.length - 1)]?.id : undefined;
+    const picked = this.screen === 'title' && this.picking !== null ? this.flyRoute() : undefined;
     if (picked !== undefined && picked !== this.map?.id && picked !== this.flyLoading) {
       this.flyLoading = picked;
       ensureMap(picked)
@@ -946,6 +990,13 @@ export class Game {
         });
     }
     this.view.renderTitle(this.build, this.style, dt, picked !== undefined && this.view.mapId === picked);
+  }
+
+  /** The route the menu flyover shows: the middle one of the three on screen, once a city is chosen. */
+  private flyRoute(): string | undefined {
+    if (this.pickCity === null) return undefined;
+    const list = routesOf(this.pickCity);
+    return list[Math.min(this.routeOffset + 1, list.length - 1)]?.id;
   }
 
   /** Shows the map the room is racing on (a joiner learns it from the room, not from the menu). */
@@ -1073,6 +1124,7 @@ export class Game {
   /** Title screen: Practice and Host first ask which route to race. */
   chooseRoute(mode: 'practice' | 'host'): void {
     this.picking = mode;
+    this.pickCity = null;
     this.routeOffset = 0;
     this.emit();
   }
@@ -1087,11 +1139,25 @@ export class Game {
 
   /** Scrolls the route picker by one route (the picker shows three at a time). */
   scrollRoutes(step: number): void {
-    this.routeOffset = Math.max(0, Math.min(ROUTES.length - 3, this.routeOffset + step));
+    const count = this.pickCity === null ? 0 : routesOf(this.pickCity).length;
+    this.routeOffset = Math.max(0, Math.min(Math.max(0, count - 3), this.routeOffset + step));
+    this.emit();
+  }
+  /** The picker's first step: which city to race in. */
+  chooseCity(city: string): void {
+    this.pickCity = city;
+    this.routeOffset = 0;
+    this.emit();
+  }
+  /** Back from a city's routes to the list of cities. */
+  backToCities(): void {
+    this.pickCity = null;
+    this.routeOffset = 0;
     this.emit();
   }
   cancelRoutePick(): void {
     this.picking = null;
+    this.pickCity = null;
     this.emit();
   }
   startOn(routeId: string): Promise<void> {
@@ -1319,6 +1385,8 @@ export class Game {
 
   openRouteChange(): void {
     this.changingRoute = true;
+    this.pickCity = null;
+    this.routeOffset = 0;
     this.roomNote = '';
     this.emit();
   }
@@ -1368,6 +1436,7 @@ export class Game {
     if (this.backgroundTimer !== 0) window.clearInterval(this.backgroundTimer);
     this.lifecycleUnsubs.forEach((off) => off());
     this.unsubscribe();
+    this.longTaskObserver?.disconnect();
     this.runner.dispose();
     this.view.dispose();
   }

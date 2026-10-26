@@ -3,6 +3,7 @@ import { MAX_PLAYERS } from '../src/sim/limits.ts';
 import { assertDeterministic } from '@series-inc/rundot-syncplay/testing';
 import { DEFAULT_INPUT, type GameInput } from '../src/sim/game.ts';
 import { createGameRuntime, makeSessionConfig } from '../src/sim/runtime.ts';
+import { ROUTES } from '../src/routes.ts';
 import { loadBakedMaps } from './lib/load-maps.ts';
 
 loadBakedMaps();
@@ -41,8 +42,12 @@ const drive = (random: { nextInt: (min: number, max: number) => number }, slot: 
   headSel: 1 + ((slot + 1) % 2),
 });
 
+// Every route in the picker is tested (a new route is covered the moment it is listed in src/routes.ts), plus the greybox
+// arena. MAPS=a,b runs just those, for a quicker check.
+const MAPS = (process.env['MAPS'] ?? ['greybox', ...ROUTES.map((r) => r.id)].join(',')).split(',');
+
 for (const [mode, inputFuzz, frames] of [['random', fuzz, 900], ['drive', drive, 1500]] as const) {
-for (const map of (process.env['MAPS'] ?? 'greybox,route1').split(',')) {
+for (const map of MAPS) {
   const config = makeSessionConfig(map, Number(process.env['BOTS'] ?? 0));
   const result = assertDeterministic({
     runtimeFactory: () => createGameRuntime(undefined, config.bytes),
@@ -51,7 +56,7 @@ for (const map of (process.env['MAPS'] ?? 'greybox,route1').split(',')) {
     seeds: [1, 2, 3],
     inputFuzz,
   });
-  console.log(`${mode.padEnd(7)} ${map.padEnd(8)}`, JSON.stringify(result));
+  console.log(`${mode.padEnd(7)} ${map.padEnd(26)}`, JSON.stringify(result));
   if (!result.ok) process.exit(1);
 }
 }

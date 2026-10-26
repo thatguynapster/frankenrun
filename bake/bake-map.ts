@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { createDeterministicPhysicsWorld3D, stepDeterministicPhysicsWorld3D } from '@series-inc/rundot-syncplay/creator';
-import { dist, project, type Pt } from './lib/geo.ts';
+import { cityOfRoute, dist, project, type Pt } from './lib/geo.ts';
 import type { BuildingData, MapData, RoadSeg, WallData } from '../src/sim/mapdata.ts';
 import { ROUTES } from './routes.ts';
 import { placeLamps } from './lamps.ts';
@@ -298,9 +298,24 @@ function laneOverlap(poly: Pt[]): number {
   }
   return inside === 0 ? 0 : onLane / inside;
 }
+/** True when the route's centre line runs through the footprint (a covered passage or arcade the road goes under). */
+const ROUTE_SAMPLES: Pt[] = [];
+for (let i = 0; i + 1 < corridor.polyline.length; i += 1) {
+  const a = corridor.polyline[i]!, b = corridor.polyline[i + 1]!;
+  const n = Math.max(1, Math.ceil(dist(a, b) / 1.5));
+  for (let k = 0; k <= n; k += 1) ROUTE_SAMPLES.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
+}
+const routeThrough = (poly: Pt[]): boolean => {
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+  return ROUTE_SAMPLES.some((p) => p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1 && pointInPoly(p, poly));
+};
 const bIn = load('buildings');
 const buildings: BuildingData[] = [];
-let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0, onRoad = 0;
+let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0, onRoad = 0, pruned = 0;
+// A building set back further than this from every road lane cannot be reached by a monster (the frontages block the
+// way), so it is drawn but gets no collider. Dense cities have a lot of these, and every collider costs physics time.
+const COLLIDER_REACH_M = Number(process.env['REACH'] ?? 0) || Infinity; // off by default: dense blocks are nearly all within reach anyway
 for (const el of bIn.elements) {
   if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) { dropped += 1; continue; }
   let pts = toPts(el.geometry);
@@ -311,13 +326,15 @@ for (const el of bIn.elements) {
   if (pts.length < 3) { dropped += 1; continue; }
   // A footprint that sits on a road (a mapping slip, or a building the road was built through) would stand in the middle of
   // the street: leave it out of the map entirely, for rendering and for collision.
-  if (laneOverlap(pts) >= MAX_LANE_OVERLAP) { onRoad += 1; continue; }
+  if (laneOverlap(pts) >= MAX_LANE_OVERLAP || routeThrough(pts)) { onRoad += 1; continue; }
   const levels = Number(el.tags?.['building:levels']);
   const height = Number(el.tags?.['height']);
   const hM = Number.isFinite(height) && height > 0 ? height : Number.isFinite(levels) && levels > 0 ? levels * 3 : 6;
-  const pieces = collidersFor(pts, hM);
+  const unreachable = COLLIDER_REACH_M !== Infinity && roadIntrusion(pts, 0) > COLLIDER_REACH_M;
+  if (unreachable) pruned += 1;
+  const pieces = unreachable ? [] : collidersFor(pts, hM);
   const base = colliderFor(pts, hM);
-  if (pieces.length === 0) rejected += 1;
+  if (pieces.length === 0) { if (!unreachable) rejected += 1; }
   else {
     collidable += 1;
     totalPieces += pieces.length;
@@ -337,9 +354,26 @@ for (const el of dIn.elements) {
     const line = simplify(toPts(el.geometry), 1.5);
     for (let i = 0; i + 1 < line.length; i += 1) {
       const a = line[i]!, b = line[i + 1]!;
+      // a wall across the route itself (a park gate or bollard line) would make it undrivable, so leave it out
+      if (ROUTE_SAMPLES.some((p) => segDist(p, a, b) < 2.5)) continue;
       if (dist(a, b) >= 4 && distToRoad({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 }, 15) <= 15) walls.push({ pts: [dm(a.x), dm(a.z), dm(b.x), dm(b.z)], h: 25 });
     }
   }
+}
+// Every wall is a physics body that is always loaded (they are not streamed like buildings), so a city with hundreds of
+// garden walls slows every physics tick. Dense cities keep only the long walls near the route, the ones that matter.
+const MAX_WALLS = 60, MIN_WALL_M = 8, WALL_NEAR_ROUTE_M = 25;
+let wallsDropped = 0;
+if (cityOfRoute(id) !== 'accra' && walls.length > MAX_WALLS) {
+  const wallLen = (w: WallData): number => Math.hypot(w.pts[2] - w.pts[0], w.pts[3] - w.pts[1]) / 10;
+  const nearRoute = (w: WallData): boolean => {
+    const a = { x: w.pts[0] / 10, z: w.pts[1] / 10 }, b = { x: w.pts[2] / 10, z: w.pts[3] / 10 };
+    return ROUTE_SAMPLES.some((p) => segDist(p, a, b) < WALL_NEAR_ROUTE_M);
+  };
+  const kept = walls.filter((w) => wallLen(w) >= MIN_WALL_M && nearRoute(w)).sort((a, b) => wallLen(b) - wallLen(a)).slice(0, MAX_WALLS);
+  wallsDropped = walls.length - kept.length;
+  walls.length = 0;
+  walls.push(...kept);
 }
 walls.sort((a, b) => a.pts[0] - b.pts[0] || a.pts[1] - b.pts[1]);
 
@@ -483,11 +517,12 @@ const map: MapData = {
 const json = Buffer.from(JSON.stringify(map), 'utf8');
 const gz = gzipSync(json, { level: 9 });
 mkdirSync('bake/out', { recursive: true });
-mkdirSync('public/cdn-assets/accra', { recursive: true });
+const CITY_DIR = `public/cdn-assets/${cityOfRoute(id)}`;
+mkdirSync(CITY_DIR, { recursive: true });
 writeFileSync(`bake/out/${id}.map.json`, json);
-writeFileSync(`public/cdn-assets/accra/${id}.map.json.gz`, gz);
+writeFileSync(`${CITY_DIR}/${id}.map.json.gz`, gz);
 console.log(`${id}: ${(json.length / 1024).toFixed(0)} KB json, ${(gz.length / 1024).toFixed(0)} KB gzip`);
-console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}), walls ${walls.length}, anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
+console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}, set back from every road and left without one ${pruned}), walls ${walls.length} (${wallsDropped} short or distant ones left out), anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
 console.log(`  checkpoints ${checkpoints.length}, route ${Math.round(total)} m, OSM base ${bIn.osmDate}`);
 const BUDGET = 4 * 1024 * 1024;
 if (gz.length > BUDGET) { console.error(`BUDGET EXCEEDED: ${gz.length} > ${BUDGET}`); process.exit(1); }

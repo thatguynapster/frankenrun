@@ -11,10 +11,13 @@ import { MAX_PLAYERS } from '../src/sim/limits.ts';
 const RUNTIME_MODULES = ['sim/limits.ts', 'sim/game.ts', 'sim/parts.ts', 'sim/track.ts', 'sim/world.ts', 'sim/mapdata.ts', 'sim/runtime.ts', 'sim/input-codec.ts', 'sim/bot.ts', 'sim/features.ts'];
 
 // Baked maps are pinned into the identity by digest, so a client with a different map can't join a room.
-const MAP_DIR = 'public/cdn-assets/accra';
-const auxiliaryAssets = (existsSync(MAP_DIR) ? readdirSync(MAP_DIR) : [])
-  .filter((f) => f.endsWith('.map.json.gz'))
-  .map((f) => describeKinetixAuxiliaryAsset(`map-${f.replace('.map.json.gz', '')}`, gunzipSync(readFileSync(`${MAP_DIR}/${f}`))))
+// Every city has its own folder under public/cdn-assets (accra, london, ...); map ids are unique across cities.
+const CDN_DIR = 'public/cdn-assets';
+const mapFiles = (existsSync(CDN_DIR) ? readdirSync(CDN_DIR, { withFileTypes: true }) : [])
+  .filter((d) => d.isDirectory())
+  .flatMap((d) => readdirSync(`${CDN_DIR}/${d.name}`).filter((f) => f.endsWith('.map.json.gz')).map((f) => `${CDN_DIR}/${d.name}/${f}`));
+const auxiliaryAssets = mapFiles
+  .map((path) => describeKinetixAuxiliaryAsset(`map-${path.split('/').pop()!.replace('.map.json.gz', '')}`, gunzipSync(readFileSync(path))))
   .sort((a, b) => (a.name < b.name ? -1 : 1));
 
 const syncplayVersion = JSON.parse(

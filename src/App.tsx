@@ -1,4 +1,4 @@
-import { ROUTES, routeInfo } from './routes.js';
+import { CITIES, cityInfo, routeInfo, routesOf } from './routes.js';
 import { HATS, TINTS, type Style } from './render/monsters/style.js';
 import { SHOW_LEADERBOARD, formatTime } from './leaderboard.js';
 import { useCallback, useRef, useState } from 'react';
@@ -80,8 +80,17 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
     return (
       <div className="panel center routes">
         <h1 className="title small">Best times</h1>
+        {CITIES.length > 1 && (
+          <div className="chips">
+            {CITIES.map((c) => (
+              <button key={c.id} className={`chip ${routeInfo(b.route)?.city === c.id ? 'on' : ''}`} onClick={() => game.openBoard(routesOf(c.id)[0]!.id, b.period)}>
+                {c.name}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="chips">
-          {ROUTES.map((r) => (
+          {routesOf(routeInfo(b.route)?.city ?? CITIES[0]!.id).map((r) => (
             <button key={r.id} className={`chip ${b.route === r.id ? 'on' : ''}`} onClick={() => game.openBoard(r.id, b.period)}>
               {r.name}
             </button>
@@ -126,10 +135,7 @@ function Overlay({ game, ui, code, setCode }: { game: Game; ui: UiState; code: s
             <BotLevelChips ui={ui} game={game} />
           </div>
         )}
-        <RouteCarousel ui={ui} game={game} onPick={(id) => void game.startOn(id)} />
-        <button className="btn" onClick={() => game.cancelRoutePick()}>
-          Back
-        </button>
+        <RoutePicker ui={ui} game={game} onPick={(id) => void game.startOn(id)} onBack={() => game.cancelRoutePick()} />
       </div>
     );
   }
@@ -342,15 +348,44 @@ function BotLevelChips({ ui, game }: { ui: UiState; game: Game }) {
   );
 }
 
+/** Two steps: which city, then which of its routes. The Back button steps back from routes to cities, then out. */
+function RoutePicker({ ui, game, onPick, onBack }: { ui: UiState; game: Game; onPick: (routeId: string) => void; onBack: () => void }) {
+  const city = ui.pickCity === null ? undefined : cityInfo(ui.pickCity);
+  return (
+    <>
+      {city === undefined ? (
+        <div className="route-list cities">
+          {CITIES.map((c) => (
+            <button key={c.id} className="route city" onClick={() => game.chooseCity(c.id)}>
+              <b>{c.name}</b>
+              <span className="km">{c.country}</span>
+              <small>{c.blurb}</small>
+              <small className="muted">{routesOf(c.id).length} routes</small>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+          <p className="muted small">{city.name}, {city.country}</p>
+          <RouteCarousel ui={ui} game={game} routes={routesOf(city.id)} onPick={onPick} />
+        </>
+      )}
+      <button className="btn" onClick={() => (city === undefined ? onBack() : game.backToCities())}>
+        {city === undefined ? 'Back' : 'Cities'}
+      </button>
+    </>
+  );
+}
+
 /** Three routes at a time with arrows and a map preview of each. */
-function RouteCarousel({ ui, game, onPick }: { ui: UiState; game: Game; onPick: (routeId: string) => void }) {
+function RouteCarousel({ ui, game, routes, onPick }: { ui: UiState; game: Game; routes: readonly { id: string; name: string; km: number; blurb: string }[]; onPick: (routeId: string) => void }) {
   return (
         <div className="route-carousel">
           <button className="carousel-arrow" aria-label="Previous routes" disabled={ui.routeOffset === 0} onClick={() => game.scrollRoutes(-1)}>
             ‹
           </button>
           <div className="route-list">
-            {ROUTES.slice(ui.routeOffset, ui.routeOffset + 3).map((r) => (
+            {routes.slice(ui.routeOffset, ui.routeOffset + 3).map((r) => (
               <button key={r.id} className="route" onClick={() => onPick(r.id)}>
                 <img src={`route-previews/${r.id}.svg`} alt={`Map of ${r.name}`} draggable={false} />
                 <b>{r.name}</b>
@@ -359,7 +394,7 @@ function RouteCarousel({ ui, game, onPick }: { ui: UiState; game: Game; onPick: 
               </button>
             ))}
           </div>
-          <button className="carousel-arrow" aria-label="Next routes" disabled={ui.routeOffset >= ROUTES.length - 3} onClick={() => game.scrollRoutes(1)}>
+          <button className="carousel-arrow" aria-label="Next routes" disabled={ui.routeOffset >= routes.length - 3} onClick={() => game.scrollRoutes(1)}>
             ›
           </button>
         </div>
@@ -460,10 +495,7 @@ function RoomNotices({ game, ui }: { game: Game; ui: UiState }) {
       {ui.changingRoute && (
         <div className="panel center routes over">
           <h1 className="title small">Pick the next route</h1>
-          <RouteCarousel ui={ui} game={game} onPick={(id) => void game.changeRoute(id)} />
-          <button className="btn" onClick={() => game.closeRouteChange()}>
-            Back
-          </button>
+          <RoutePicker ui={ui} game={game} onPick={(id) => void game.changeRoute(id)} onBack={() => game.closeRouteChange()} />
         </div>
       )}
     </>
@@ -787,7 +819,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           Menu (Esc)
         </button>
         <div className="net">
-          {ui.showInfo && <div>{ui.diag}</div>}
+          {ui.showInfo && <div style={{ whiteSpace: 'pre-line' }}>{ui.diag}</div>}
           {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection}`}</div>}
         </div>
       </div>
