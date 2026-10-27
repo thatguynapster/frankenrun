@@ -36,21 +36,6 @@ async function load(id: string): Promise<void> {
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((b.minX + b.maxX) / 20, 0, (b.minZ + b.maxZ) / 20);
   world.add(ground);
-  // one merged ribbon mesh, as the race view draws the roads
-  const positions: number[] = [];
-  for (const r of map.roads) {
-    const hw = r.hw / 10;
-    for (let i = 0; i + 3 < r.pts.length; i += 2) {
-      const x0 = r.pts[i]! / 10, z0 = r.pts[i + 1]! / 10, x1 = r.pts[i + 2]! / 10, z1 = r.pts[i + 3]! / 10;
-      const len = Math.hypot(x1 - x0, z1 - z0) || 1;
-      const nx = (-(z1 - z0) / len) * hw, nz = ((x1 - x0) / len) * hw;
-      const y = 0.04;
-      positions.push(x0 + nx, y, z0 + nz, x1 + nx, y, z1 + nz, x0 - nx, y, z0 - nz, x1 + nx, y, z1 + nz, x1 - nx, y, z1 - nz, x0 - nx, y, z0 - nz);
-    }
-  }
-  const roadGeo = new THREE.BufferGeometry();
-  roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  world.add(new THREE.Mesh(roadGeo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
   cityMeshes = buildCity(map, theme.cityTint, routeInfo(id)?.city);
   fogFar = theme.fogFar;
   for (const o of cityMeshes) world.add(o);
@@ -88,11 +73,29 @@ const view = {
     camera.lookAt(x + Math.sin(a) * 12, 3, z + Math.cos(a) * 12);
   },
   triangles,
+  /** Lays a green disc (like a slime puddle) on the road at (x, z); level is the polygon offset the game gives road decals, 0 for none. */
+  decal(x: number, z: number, level: number, color = 0x35d84a): void {
+    const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, depthWrite: false });
+    if (level > 0) {
+      m.polygonOffset = true;
+      m.polygonOffsetFactor = -level;
+      m.polygonOffsetUnits = -level;
+    }
+    const d = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20), m);
+    d.rotation.x = -Math.PI / 2;
+    d.position.set(x, 0.06, z);
+    world?.add(d);
+  },
+  /** Shows or hides the street meshes, to time what they cost. */
+  streets(on: boolean, layer = ""): void {
+    for (const m of cityMeshes) if (m.name.startsWith("street-" + layer)) m.userData["off"] = !on;
+  },
   /** Average milliseconds per frame over n frames, waiting for the GPU each time. */
   bench(n = 30): number {
     const gl = renderer.getContext();
     const t0 = performance.now();
     cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
+    for (const m of cityMeshes) if (m.userData["off"] === true) m.visible = false;
     for (let i = 0; i < n; i += 1) {
       renderer.render(scene, camera);
       gl.finish();
@@ -100,9 +103,9 @@ const view = {
     return (performance.now() - t0) / n;
   },
   /** Camera near world point (x, z) looking toward (lx, lz). */
-  look(x: number, z: number, lx: number, lz: number, height = 3): void {
+  look(x: number, z: number, lx: number, lz: number, height = 3, ty = 1.5): void {
     camera.position.set(x, height, z);
-    camera.lookAt(lx, 1.5, lz);
+    camera.lookAt(lx, ty, lz);
   },
   get map(): MapData | undefined {
     return map;
@@ -123,6 +126,7 @@ const view = {
 
 function frame(): void {
   cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
+  for (const m of cityMeshes) if (m.userData["off"] === true) m.visible = false;
   renderer.render(scene, camera);
   info.textContent = `${Math.round(triangles()).toLocaleString()} triangles, ${renderer.info.render.calls} draw calls`;
   requestAnimationFrame(frame);

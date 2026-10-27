@@ -13,6 +13,7 @@ export interface CityInfo {
 export const CITIES: readonly CityInfo[] = [
   { id: 'accra', name: 'Accra', country: 'Ghana', blurb: 'Back lanes, old town and Ring Road' },
   { id: 'london', name: 'London', country: 'England', blurb: 'Brick terraces, fog and winding old streets' },
+  { id: 'newyork', name: 'New York', country: 'USA', blurb: 'Towers, brownstones and avenues that never end' },
 ];
 
 export interface RouteInfo {
@@ -33,6 +34,10 @@ export const ROUTES: readonly RouteInfo[] = [
   { id: 'london-westminster-soho', city: 'london', name: 'Westminster to Soho', km: 2.4, blurb: 'From the Houses of Parliament up to the bright lights of Soho' },
   { id: 'london-shoreditch', city: 'london', name: 'Shoreditch Back Streets', km: 1.8, blurb: 'Short and busy: four sharp turns through the east end' },
   { id: 'london-piccadilly', city: 'london', name: 'Piccadilly to Holborn', km: 2.9, blurb: 'Flat out along Piccadilly: wide, straight and fast' },
+  { id: 'newyork-midtown', city: 'newyork', name: 'Midtown Grid', km: 3.0, blurb: 'Times Square down Broadway between the towers, with a jog at every block' },
+  { id: 'newyork-lower-manhattan', city: 'newyork', name: 'Lower Manhattan Maze', km: 3.0, blurb: 'From the Battery through the crooked old streets to Chinatown' },
+  { id: 'newyork-brooklyn', city: 'newyork', name: 'Brooklyn Brownstones', km: 4.1, blurb: 'Park Slope to DUMBO: a long run past brownstones, with six sharp turns' },
+  { id: 'newyork-west-village', city: 'newyork', name: 'West Village Twist', km: 1.7, blurb: 'Short and tight: angled streets where the grid breaks' },
 ];
 
 /** The routes of one city, in picker order. */

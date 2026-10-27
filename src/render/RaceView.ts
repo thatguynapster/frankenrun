@@ -40,10 +40,21 @@ interface Debris {
 }
 
 /** Renders a GameProjection. Reads state, never writes back into the simulation. */
+/**
+ * Marks a material as lying on the road. The street layers (streets.ts) are ordered with a polygon offset, which pulls them
+ * toward the camera; anything drawn on the road must be pulled further, or the asphalt covers it. Higher levels sit above lower ones.
+ */
+function onRoad<M extends THREE.Material>(material: M, level: number): M {
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -level;
+  material.polygonOffsetUnits = -level;
+  return material;
+}
+
 export class RaceView {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 320);
+  private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 900);
   private cars: CarRig[] = [];
   private readonly lobbyStage = new LobbyStage();
   private lobbyOn = false;
@@ -95,8 +106,8 @@ export class RaceView {
   private beamMats = [LEGS_COLOR, ARMS_COLOR, HEAD_COLOR].map((color) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false }));
   private slickGeo = RaceView.puddle(HEADS.slime.slickRadius, 1);
   private slickCoreGeo = RaceView.puddle(HEADS.slime.slickRadius * 0.55, 2);
-  private slickMat = new THREE.MeshBasicMaterial({ color: 0x35d84a, transparent: true, opacity: 0.62, depthWrite: false });
-  private slickCoreMat = new THREE.MeshBasicMaterial({ color: 0xb6ff8a, transparent: true, opacity: 0.5, depthWrite: false });
+  private slickMat = onRoad(new THREE.MeshBasicMaterial({ color: 0x35d84a, transparent: true, opacity: 0.62, depthWrite: false }), 14);
+  private slickCoreMat = onRoad(new THREE.MeshBasicMaterial({ color: 0xb6ff8a, transparent: true, opacity: 0.5, depthWrite: false }), 15);
   private blobGeo = new THREE.IcosahedronGeometry(0.36, 1);
   private blobMat = new THREE.MeshLambertMaterial({ color: 0x7dff3a, emissive: 0x2c8a10, flatShading: true });
   private resizeObserver: ResizeObserver;
@@ -181,24 +192,7 @@ export class RaceView {
       group.add(grid);
     }
 
-    // Roads: one flat ribbon per segment, merged into a single mesh.
-    if (map.roads.length > 0) {
-      const positions: number[] = [];
-      for (const road of map.roads) {
-        const hw = road.hw / 10;
-        for (let i = 0; i + 3 < road.pts.length; i += 2) {
-          const x0 = road.pts[i]! / 10, z0 = road.pts[i + 1]! / 10, x1 = road.pts[i + 2]! / 10, z1 = road.pts[i + 3]! / 10;
-          const len = Math.hypot(x1 - x0, z1 - z0) || 1;
-          const nx = (-(z1 - z0) / len) * hw, nz = ((x1 - x0) / len) * hw;
-          const y = 0.04;
-          positions.push(x0 + nx, y, z0 + nz, x1 + nx, y, z1 + nz, x0 - nx, y, z0 - nz, x1 + nx, y, z1 + nz, x1 - nx, y, z1 - nz, x0 - nx, y, z0 - nz);
-        }
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geo.computeVertexNormals();
-      group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x6a728f, side: THREE.DoubleSide })));
-    }
+    // The roads, kerbs, pavements and markings are drawn with the city (see streets.ts).
 
     // Boost pads (glowing chevrons that pulse) and oil patches (dark, glossy) laid along the route.
     this.padMats = [];
@@ -213,9 +207,9 @@ export class RaceView {
     chevron.lineTo(-0.7, -0.15);
     const chevGeo = new THREE.ShapeGeometry(chevron);
     for (const f of features.pads) {
-      const mat = new THREE.MeshBasicMaterial({ color: 0x3bf5ff, transparent: true, opacity: 0.85, depthWrite: false });
+      const mat = onRoad(new THREE.MeshBasicMaterial({ color: 0x3bf5ff, transparent: true, opacity: 0.85, depthWrite: false }), 12);
       this.padMats.push(mat);
-      const disc = new THREE.Mesh(padGeo, new THREE.MeshBasicMaterial({ color: 0x0a2a3a, transparent: true, opacity: 0.8, depthWrite: false }));
+      const disc = new THREE.Mesh(padGeo, onRoad(new THREE.MeshBasicMaterial({ color: 0x0a2a3a, transparent: true, opacity: 0.8, depthWrite: false }), 10));
       disc.rotation.x = -Math.PI / 2;
       disc.scale.setScalar(f.radius);
       disc.position.set(f.x, 0.07, f.z);
@@ -230,8 +224,8 @@ export class RaceView {
       }
     }
     const oilGeo = new THREE.CircleGeometry(1, 14);
-    const oilMat = new THREE.MeshBasicMaterial({ color: 0x07060d, transparent: true, opacity: 0.92, depthWrite: false });
-    const sheenMat = new THREE.MeshBasicMaterial({ color: 0x7a5cff, transparent: true, opacity: 0.35, depthWrite: false });
+    const oilMat = onRoad(new THREE.MeshBasicMaterial({ color: 0x07060d, transparent: true, opacity: 0.92, depthWrite: false }), 10);
+    const sheenMat = onRoad(new THREE.MeshBasicMaterial({ color: 0x7a5cff, transparent: true, opacity: 0.35, depthWrite: false }), 11);
     features.oils.forEach((f, i) => {
       const puddle = new THREE.Mesh(oilGeo, oilMat);
       puddle.rotation.x = -Math.PI / 2;

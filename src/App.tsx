@@ -405,7 +405,7 @@ const BOT_NAMES = ['Ghoul', 'Wraith', 'Zombie', 'Mummy', 'Banshee', 'Vampire', '
 /** The name an AI racer races under. */
 const botName = (slot: number): string => `${BOT_NAMES[slot % BOT_NAMES.length]} (bot)`;
 
-function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub, styles }: { game: Game; frame: GameProjection; meSlot: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission']; styles: Readonly<Record<number, Style>> }) {
+function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub, styles, checkpointTotal }: { game: Game; frame: GameProjection; meSlot: number; checkpointTotal: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission']; styles: Readonly<Record<number, Style>> }) {
   const me = frame.players[meSlot];
   const nameOf = (slot: number): string => names[slot] ?? (frame.players[slot]?.bot ? botName(slot) : `Player ${slot + 1}`);
   const racers = frame.players.filter((p) => p.inRace); // AI racers count: they are part of the race
@@ -413,7 +413,8 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub
     <div className="panel center results">
       <h2 className="title small">{mode === 'finished' ? 'Race complete!' : 'Results'}</h2>
       {frame.mapId && <p className="muted small">{routeInfo(frame.mapId)?.name ?? frame.mapId}</p>}
-      {mode === 'finished' && me && <p className="muted small">Your time: {((me.finishTick - frame.raceStart) / TICK).toFixed(1)}s. Waiting for the others to finish...</p>}
+      {mode === 'finished' && me && <p className="muted small">Your time: {((me.finishTick - frame.raceStart) / TICK).toFixed(1)}s. The board updates as the others finish.</p>}
+      {mode === 'live' && racers.some((p) => p.finishTick < 0 && (p.bot || p.present)) && <p className="muted small">Racers still on the road are shown below and join the board as they finish.</p>}
       {banner && <p className="muted small">{banner}</p>}
       {shareNote && <p className="muted small">{shareNote}</p>}
       {SHOW_LEADERBOARD && sub && sub.route === frame.mapId && me && me.finishTick >= 0 && (
@@ -441,7 +442,7 @@ function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub
           .filter((p) => p.finishTick < 0)
           .map((p) => (
             <li key={`dnf-${p.slot}`} className="muted">
-              {nameOf(p.slot)} - {mode === 'finished' ? 'racing...' : 'DNF'}
+              {nameOf(p.slot)} - {mode === 'stale' ? 'did not finish' : p.bot || p.present ? `still running (checkpoint ${Math.min(p.nextCheckpoint, checkpointTotal)} of ${checkpointTotal})` : 'left the race'}
               <small> · parts lost {p.partsLost}, picked up {p.partsGained}, stolen {p.partsStolen}</small>
             </li>
           ))}
@@ -689,7 +690,7 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   // started): they keep the last results they saw and can join the next race.
   if (raceOn && !me.inRace) {
     if (ui.cachedResults) {
-      return <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={ui.cachedResults} meSlot={ui.localSlot} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
+      return <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={ui.cachedResults} meSlot={ui.localSlot} checkpointTotal={ui.checkpointTotal} mode="stale" banner="A new race is in progress without you. Tap Join next race to be in the one after." />;
     }
     return (
       <div className="panel center">
@@ -708,9 +709,19 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
   }
 
   const racers = frame.players.filter((p) => p.inRace); // AI racers count: they are part of the race
+  // Finishers come first (in the order they finished), then everyone by checkpoints passed, and racers on the same leg by how
+  // close they are to the next checkpoint, so places change all along the leg and not only when a checkpoint is passed.
+  const toNext = (p: (typeof racers)[number]): number => {
+    const cp = ui.checkpoints[Math.min(p.nextCheckpoint, ui.checkpoints.length - 1)];
+    return cp === undefined ? 0 : Math.hypot(cp.x - p.x, cp.z - p.z);
+  };
   const position =
     [...racers]
-      .sort((a, b) => (b.finishTick >= 0 ? 1 : 0) - (a.finishTick >= 0 ? 1 : 0) || b.nextCheckpoint - a.nextCheckpoint)
+      .sort((a, b) => {
+        const fa = a.finishTick >= 0, fb = b.finishTick >= 0;
+        if (fa || fb) return fa && fb ? a.finishTick - b.finishTick : fa ? -1 : 1;
+        return b.nextCheckpoint - a.nextCheckpoint || toNext(a) - toNext(b);
+      })
       .findIndex((p) => p.slot === me.slot) + 1;
 
   return (
@@ -823,8 +834,15 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           {ui.roomCode && <div>{`room ${ui.roomCode} · ping ${ui.rttMs} ms · ${ui.connection}`}</div>}
         </div>
       </div>
-      {(frame.phase === 'RESULTS' || me.finishTick >= 0) && (
-        <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={frame} meSlot={me.slot} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
+      {/* The results cover the screen for everyone who has finished (or is not racing). A racer still on the road keeps playing. */}
+      {(me.finishTick >= 0 || (frame.phase === 'RESULTS' && !(me.inRace && !me.rematch))) && (
+        <ResultsPanel game={game} names={ui.names} shareNote={ui.shareNote} sub={ui.lastSubmission} styles={ui.styles} frame={frame} meSlot={me.slot} checkpointTotal={ui.checkpointTotal} mode={frame.phase === 'RESULTS' ? 'live' : 'finished'} />
+      )}
+      {frame.phase === 'RESULTS' && me.inRace && !me.rematch && me.finishTick < 0 && (
+        <div className="tip">
+          The results are in, but your race goes on.
+          <small>finish to get your time on the board</small>
+        </div>
       )}
       {ui.tip && me.finishTick < 0 && frame.phase !== 'RESULTS' && (
         <button className="tip" onClick={() => game.dismissTip()}>

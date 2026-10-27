@@ -7,6 +7,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { BuildingData, MapData } from '../sim/mapdata.js';
 import { Shape } from './monsters/shapes.js';
+import { buildStreets } from './streets.js';
+import { landmarkModel, landmarksOf, type Landmark } from './landmarks.js';
 
 // ---------- tunables ----------
 
@@ -102,6 +104,7 @@ void main() {
 // ---------- facade texture ----------
 
 let facadeTexture: THREE.CanvasTexture | undefined;
+let facadeMask: THREE.CanvasTexture | undefined;
 /** Windows on a 16 m x 12 m tile (4 columns, 4 floors); a few are lit. White wall, so the vertex colour paints it. */
 function getFacadeTexture(): THREE.CanvasTexture | undefined {
   if (typeof document === 'undefined') return undefined;
@@ -112,6 +115,14 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
   canvas.height = size;
   const ctx = canvas.getContext('2d');
   if (ctx === null) return undefined;
+  // the mask marks the window glass; the shader lights each window separately, so no two buildings share a pattern
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = size;
+  maskCanvas.height = size;
+  const mctx = maskCanvas.getContext('2d')!;
+  mctx.fillStyle = '#000000';
+  mctx.fillRect(0, 0, size, size);
+  mctx.fillStyle = '#ffffff';
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, size, size);
   // plaster: faint speckle (left edge of every cell stays plain, the plinth, parapets and doors sample it)
@@ -123,7 +134,6 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
     ctx.fillStyle = rnd() < 0.5 ? 'rgba(120,110,130,0.07)' : 'rgba(255,255,255,0.35)';
     ctx.fillRect(sx, sy, 1 + rnd() * 2, 1 + rnd() * 2);
   }
-  const lit = new Set([1, 6, 8, 11, 13, 14]);
   for (let row = 0; row < 4; row += 1) {
     for (let col = 0; col < 4; col += 1) {
       const x = col * cell, y = row * cell;
@@ -133,7 +143,7 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
       ctx.fillStyle = '#9a96ab';
       ctx.fillRect(x, y + 5, cell, 2);
       const index = row * 4 + col;
-      const on = lit.has(index);
+      const on = false;
       const shuttered = (row * 3 + col) % 5 === 0;
       const wx = x + cell * 0.27, wy = y + cell * 0.27, ww = cell * 0.46, wh = cell * 0.5;
       // lintel over the window and a projecting sill under it
@@ -150,6 +160,7 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
       if (on) { glass.addColorStop(0, '#ffe9a6'); glass.addColorStop(1, '#f0b95a'); } else { glass.addColorStop(0, '#46507c'); glass.addColorStop(1, '#232846'); }
       ctx.fillStyle = glass;
       ctx.fillRect(wx, wy, ww, wh);
+      mctx.fillRect(wx, wy, ww, wh);
       ctx.fillStyle = on ? '#fff6d0' : '#6a72a0';
       ctx.fillRect(wx + 2, wy + 2, ww * 0.3, 2); // a glint
       ctx.fillStyle = on ? '#b98a3c' : '#14172b';
@@ -175,7 +186,86 @@ function getFacadeTexture(): THREE.CanvasTexture | undefined {
   t.anisotropy = 4;
   t.colorSpace = THREE.SRGBColorSpace;
   facadeTexture = t;
+  const mt = new THREE.CanvasTexture(maskCanvas);
+  mt.wrapS = THREE.RepeatWrapping;
+  mt.wrapT = THREE.RepeatWrapping;
+  mt.anisotropy = 4;
+  facadeMask = mt;
   return t;
+}
+
+// ---------- facade shaders ----------
+
+const HASH_GLSL = `
+float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+`;
+
+/** Lights each window separately (so no two buildings repeat a pattern) and draws shopfronts, on top of the facade tile. */
+function patchWalls(material: THREE.Material, mask: THREE.Texture | undefined): void {
+  const previous = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    previous.call(material, shader, renderer);
+    shader.uniforms['uMask'] = { value: mask ?? null };
+    shader.vertexShader = shader.vertexShader
+      .replace('void main() {', 'attribute float aKind;\nvarying float vKind;\nvoid main() {')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvKind = aKind;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', `varying float vKind;\nuniform sampler2D uMask;\n${HASH_GLSL}\nvoid main() {`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+	float bright = dot(vColor.rgb, vec3(0.34));
+	float winMask = texture2D(uMask, vMapUv).r;
+	if (winMask > 0.02) {
+		vec2 c = floor(vMapUv * 4.0);
+		float h = h21(c);
+		float lit = step(0.7, h);
+		float cool = step(0.86, fract(h * 13.7));
+		vec3 litCol = mix(vec3(1.0, 0.8, 0.46), vec3(0.78, 0.9, 1.0), cool);
+		vec3 darkCol = vec3(0.08, 0.11, 0.21) * (0.6 + 0.6 * bright);
+		diffuseColor.rgb = mix(diffuseColor.rgb, mix(darkCol, litCol * 1.05, lit), clamp(winMask, 0.0, 1.0));
+	}
+	if (vKind > 0.5) {
+		float y = vMapUv.y * 12.0;
+		float cu = fract(vMapUv.x * 4.0);
+		float h = h21(vec2(floor(vMapUv.x * 4.0), 3.7));
+		float pane = step(0.1, cu) * step(cu, 0.9) * step(0.7, y) * step(y, 2.55);
+		float mull = step(abs(cu - 0.5), 0.025) * pane;
+		float lit = step(0.3, h);
+		vec3 inside = mix(vec3(0.16, 0.14, 0.2), mix(vec3(1.0, 0.82, 0.5), vec3(1.0, 0.95, 0.85), step(0.7, fract(h * 9.1))), lit);
+		inside *= 0.72 + 0.4 * (1.0 - clamp((y - 0.7) / 1.85, 0.0, 1.0));
+		vec3 col = mix(diffuseColor.rgb, inside, pane);
+		col = mix(col, vec3(0.1, 0.09, 0.12), mull);
+		col = mix(col, vec3(0.12, 0.1, 0.15) * (0.6 + 0.8 * bright), step(2.55, y));
+		diffuseColor.rgb = col;
+	}`);
+  };
+  material.customProgramCacheKey = () => 'frankenrun-cutaway-walls';
+}
+
+/** A glass curtain wall for towers, drawn entirely in the shader: mullions, floor bands, lit offices in runs, a sky tint. */
+function patchGlass(material: THREE.Material): void {
+  const previous = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    previous.call(material, shader, renderer);
+    shader.vertexShader = shader.vertexShader
+      .replace('void main() {', 'varying vec2 vGlassUv;\nvoid main() {')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvGlassUv = uv;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', `varying vec2 vGlassUv;\n${HASH_GLSL}\nvoid main() {`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+	{
+		vec2 m = vec2(vGlassUv.x * 16.0, vGlassUv.y * 12.0);
+		vec2 cell = vec2(floor(m.x / 1.5), floor(m.y / 3.6));
+		vec2 f = vec2(fract(m.x / 1.5), fract(m.y / 3.6));
+		float frame = min(step(f.x, 0.07) + step(0.93, f.x) + step(f.y, 0.1), 1.0);
+		float bright = dot(diffuseColor.rgb, vec3(0.34));
+		vec3 sky = mix(vec3(0.16, 0.21, 0.36), vec3(0.34, 0.42, 0.62), clamp(m.y / 140.0, 0.0, 1.0));
+		float run = h21(vec2(floor(cell.x / 4.0), cell.y));
+		float lit = step(0.74, run) * step(0.35, h21(cell + 5.1));
+		vec3 glass = mix(sky * (0.55 + 1.1 * bright), vec3(0.95, 0.78, 0.52), lit);
+		diffuseColor.rgb = mix(glass, diffuseColor.rgb * 0.55, frame);
+	}`);
+  };
+  material.customProgramCacheKey = () => 'frankenrun-cutaway-glass';
 }
 
 // ---------- footprint helpers ----------
@@ -230,20 +320,26 @@ interface Chunk {
   props: THREE.BufferGeometry[];
   signs: THREE.BufferGeometry[];
   walls: THREE.BufferGeometry[];
+  glass: THREE.BufferGeometry[];
   roofs: THREE.BufferGeometry[];
   lamps: THREE.BufferGeometry[];
   pools: THREE.BufferGeometry[];
-  street: THREE.BufferGeometry[];
 }
 
 function chunkOf(chunks: Map<string, Chunk>, x: number, z: number): Chunk {
   const key = `${Math.floor(x / CHUNK)},${Math.floor(z / CHUNK)}`;
   let c = chunks.get(key);
   if (c === undefined) {
-    c = { cars: [], props: [], signs: [], walls: [], roofs: [], lamps: [], pools: [], street: [] };
+    c = { cars: [], props: [], signs: [], walls: [], glass: [], roofs: [], lamps: [], pools: [] };
     chunks.set(key, c);
   }
   return c;
+}
+
+function wallGeometry(w: WallBuilder): THREE.BufferGeometry {
+  const g = geometryFrom(w.p, w.c, w.u);
+  g.setAttribute('aKind', new THREE.Float32BufferAttribute(w.k, 1));
+  return g;
 }
 
 function geometryFrom(positions: number[], colors: number[], uvs?: number[]): THREE.BufferGeometry {
@@ -258,6 +354,8 @@ function geometryFrom(positions: number[], colors: number[], uvs?: number[]): TH
 const PLAIN_U = 4 / 256, PLAIN_V = 1 - 32 / 256;
 const STONE = new THREE.Color(0x6d6a78);
 const PLINTH = 0.6; // metres of darker stone at the foot of every wall
+const TOWER_H = 45; // buildings at least this tall get a glass curtain wall
+const SHOP_TOP = 3.2; // a shopfront fills the ground floor up to this height
 const FLOOR = 3; // metres per floor: matches the facade tile (4 floors in 12 m)
 
 type P3 = readonly [number, number, number];
@@ -267,6 +365,8 @@ class WallBuilder {
   readonly p: number[] = [];
   readonly c: number[] = [];
   readonly u: number[] = [];
+  /** 0 for a window wall, 1 for a shopfront. */
+  readonly k: number[] = [];
   /** A quad a-b-c-d (anticlockwise seen from outside), flat colour from the plain part of the tile. */
   flat(a: P3, b: P3, c: P3, d: P3, color: THREE.Color, shade: number): void {
     const v = [a, b, c, a, c, d];
@@ -274,6 +374,7 @@ class WallBuilder {
       this.p.push(q[0], q[1], q[2]);
       this.c.push(color.r * shade, color.g * shade, color.b * shade);
       this.u.push(PLAIN_U, PLAIN_V);
+      this.k.push(0);
     }
   }
 }
@@ -293,7 +394,21 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
   const plinth = new THREE.Color(tint).lerp(STONE, 0.6);
 
   const walls = new WallBuilder();
-  const wp = walls.p, wc = walls.c, wu = walls.u;
+  const wp = walls.p;
+  const glassWalls = new WallBuilder();
+  const isTower = height >= TOWER_H;
+  // the longest wall of some buildings is a shopfront with a sign, a door and an awning
+  let shopWall = -1;
+  if (rand01(seed + 21) < style.signChance && height < 22) {
+    let longest = 0;
+    for (let k = 0; k < n; k += 1) {
+      const j = (k + 1) % n;
+      const len = Math.hypot(f.xs[j]! - f.xs[k]!, f.zs[j]! - f.zs[k]!);
+      if (len > longest) { longest = len; shopWall = k; }
+    }
+    if (longest <= 5) shopWall = -1;
+  }
+  const tileShift = h32(seed + 3) % 61; // shifts each building along the facade tile so lit windows differ
   let balconies = tall && height < 34 && rand01(seed + 61) < 0.5;
   for (let k = 0; k < n; k += 1) {
     const j = (k + 1) % n;
@@ -308,16 +423,26 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
     const u1 = len / 16;
     // the body: windows tiled along it (the tile starts at the wall's own start, so windows sit at 2, 6, 10 ... metres)
     const y0 = PLINTH, y1 = height;
-    const v0 = y0 / 12, v1 = y1 / 12;
-    const quad = [
-      [x0, y0, z0, 0, v0, bottom], [x1, y0, z1, u1, v0, bottom], [x1, y1, z1, u1, v1, top],
-      [x0, y0, z0, 0, v0, bottom], [x1, y1, z1, u1, v1, top], [x0, y1, z0, 0, v1, top],
-    ] as const;
-    for (const v of quad) {
-      wp.push(v[0], v[1], v[2]);
-      wc.push(wall.r * v[5], wall.g * v[5], wall.b * v[5]);
-      wu.push(v[3], v[4]);
-    }
+    const ua = tileShift + k * 5, ub = ua + u1; // whole tiles, so windows still line up
+    const body = (target: WallBuilder, ya: number, yb: number, kind: number): void => {
+      const sa = bottom + (top - bottom) * ((ya - y0) / (y1 - y0)), sb = bottom + (top - bottom) * ((yb - y0) / (y1 - y0));
+      const va = ya / 12, vb = yb / 12;
+      const corners = [
+        [x0, ya, z0, ua, va, sa], [x1, ya, z1, ub, va, sa], [x1, yb, z1, ub, vb, sb],
+        [x0, ya, z0, ua, va, sa], [x1, yb, z1, ub, vb, sb], [x0, yb, z0, ua, vb, sb],
+      ] as const;
+      for (const v of corners) {
+        target.p.push(v[0], v[1], v[2]);
+        target.c.push(wall.r * v[5], wall.g * v[5], wall.b * v[5]);
+        target.u.push(v[3], v[4]);
+        target.k.push(kind);
+      }
+    };
+    const faceTarget = isTower ? glassWalls : walls;
+    if (k === shopWall && height > SHOP_TOP + 1) {
+      body(walls, y0, SHOP_TOP, 1);
+      body(faceTarget, SHOP_TOP, y1, 0);
+    } else body(faceTarget, y0, y1, 0);
     // the plinth: darker stone, a hair proud of the wall so it reads as a step
     const o = 0.06;
     const ax: P3 = [x0 + nx * o, 0, z0 + nz * o], bx: P3 = [x1 + nx * o, 0, z1 + nz * o];
@@ -355,17 +480,14 @@ function addBuilding(i: number, b: BuildingData, chunk: Chunk): void {
       }
     }
   }
-  if (wp.length > 0) chunk.walls.push(geometryFrom(wp, wc, wu));
+  if (wp.length > 0) chunk.walls.push(wallGeometry(walls));
+  if (glassWalls.p.length > 0) chunk.glass.push(wallGeometry(glassWalls));
 
   // A glowing shop sign, a door and an awning on the longest wall of some buildings (street level, facing out).
-  if (rand01(seed + 21) < style.signChance && height < 22) {
-    let bk = -1, blen = 0;
-    for (let k = 0; k < n; k += 1) {
-      const j = (k + 1) % n;
-      const len = Math.hypot(f.xs[j]! - f.xs[k]!, f.zs[j]! - f.zs[k]!);
-      if (len > blen) { blen = len; bk = k; }
-    }
-    if (bk >= 0 && blen > 5) {
+  if (shopWall >= 0) {
+    const bk = shopWall;
+    const blen = Math.hypot(f.xs[(bk + 1) % n]! - f.xs[bk]!, f.zs[(bk + 1) % n]! - f.zs[bk]!);
+    {
       const j = (bk + 1) % n;
       const x0 = f.xs[bk]!, z0 = f.zs[bk]!, x1 = f.xs[j]!, z1 = f.zs[j]!;
       const ux = (x1 - x0) / blen, uz = (z1 - z0) / blen;
@@ -491,109 +613,7 @@ function addProp(rp: number[], rc: number[], kind: 'tank' | 'stair' | 'ac' | 'ch
   }
 }
 
-// ---------- street level: pavements with kerbs, and dashed centre lines ----------
-
-const PAVEMENT = new THREE.Color(0x8a8398);
-const KERB = new THREE.Color(0x5d6078);
-const PAINT = new THREE.Color(0xd9d3b4);
-const PAVE_WIDTH = 1.5; // metres
-const KERB_HEIGHT = 0.14;
-
-/** Looks up which road surfaces are near a point, so pavements and paint stop short of side streets. */
-class RoadIndex {
-  private readonly cells = new Map<number, number[]>(); // cell -> indices into `segs`
-  private readonly segs: { x0: number; z0: number; x1: number; z1: number; hw: number; road: number }[] = [];
-  private static readonly CELL = 24;
-  constructor(roads: MapData['roads']) {
-    roads.forEach((road, ri) => {
-      for (let i = 0; i + 3 < road.pts.length; i += 2) {
-        const seg = { x0: road.pts[i]! / 10, z0: road.pts[i + 1]! / 10, x1: road.pts[i + 2]! / 10, z1: road.pts[i + 3]! / 10, hw: road.hw / 10, road: ri };
-        const id = this.segs.push(seg) - 1;
-        const len = Math.hypot(seg.x1 - seg.x0, seg.z1 - seg.z0);
-        const steps = Math.max(1, Math.ceil(len / 8));
-        const reach = seg.hw + PAVE_WIDTH + 2;
-        for (let s = 0; s <= steps; s += 1) {
-          const x = seg.x0 + ((seg.x1 - seg.x0) * s) / steps, z = seg.z0 + ((seg.z1 - seg.z0) * s) / steps;
-          for (let cx = Math.floor((x - reach) / RoadIndex.CELL); cx <= Math.floor((x + reach) / RoadIndex.CELL); cx += 1) {
-            for (let cz = Math.floor((z - reach) / RoadIndex.CELL); cz <= Math.floor((z + reach) / RoadIndex.CELL); cz += 1) {
-              const key = cx * 100003 + cz;
-              const list = this.cells.get(key);
-              if (list === undefined) this.cells.set(key, [id]);
-              else if (list[list.length - 1] !== id) list.push(id);
-            }
-          }
-        }
-      }
-    });
-  }
-  /** True when (x, z) lies within `margin` metres of the surface of any road other than `except`. */
-  covered(x: number, z: number, margin: number, except: number): boolean {
-    const list = this.cells.get(Math.floor(x / RoadIndex.CELL) * 100003 + Math.floor(z / RoadIndex.CELL));
-    if (list === undefined) return false;
-    for (const id of list) {
-      const s = this.segs[id]!;
-      if (s.road === except) continue;
-      const dx = s.x1 - s.x0, dz = s.z1 - s.z0;
-      const l2 = dx * dx + dz * dz || 1;
-      const t = Math.max(0, Math.min(1, ((x - s.x0) * dx + (z - s.z0) * dz) / l2));
-      if (Math.hypot(x - (s.x0 + dx * t), z - (s.z0 + dz * t)) < s.hw + margin) return true;
-    }
-    return false;
-  }
-}
-
-/** Raised pavements on both sides of every road and a dashed centre line on the wide ones. */
-function addStreet(map: MapData, chunks: Map<string, Chunk>): void {
-  const index = new RoadIndex(map.roads);
-  const up = shadeFor(0, 1, 0) * 0.82;
-  const pushQuad = (chunk: Chunk, a: P3, b: P3, c: P3, d: P3, color: THREE.Color, shade: number): void => {
-    const pos = [...a, ...b, ...c, ...a, ...c, ...d];
-    const col: number[] = [];
-    for (let v = 0; v < 6; v += 1) col.push(color.r * shade, color.g * shade, color.b * shade);
-    chunk.street.push(geometryFrom(pos, col));
-  };
-  map.roads.forEach((road, ri) => {
-    const hw = road.hw / 10;
-    for (let i = 0; i + 3 < road.pts.length; i += 2) {
-      const x0 = road.pts[i]! / 10, z0 = road.pts[i + 1]! / 10, x1 = road.pts[i + 2]! / 10, z1 = road.pts[i + 3]! / 10;
-      const len = Math.hypot(x1 - x0, z1 - z0);
-      if (len < 1) continue;
-      const ux = (x1 - x0) / len, uz = (z1 - z0) / len;
-      const nx = -uz, nz = ux; // left of the direction of travel
-      const chunk = chunkOf(chunks, (x0 + x1) / 2, (z0 + z1) / 2);
-      const at = (s: number, off: number, y: number): P3 => [x0 + ux * s + nx * off, y, z0 + uz * s + nz * off];
-      const step = 1.5;
-      const count = Math.max(1, Math.ceil(len / step));
-      for (const side of [1, -1]) {
-        // runs of the segment where the pavement is not crossing a side street
-        let runStart = -1;
-        for (let k = 0; k <= count; k += 1) {
-          const s = Math.min(len, k * step);
-          const p = at(s, side * (hw + PAVE_WIDTH / 2), 0);
-          const blocked = index.covered(p[0], p[2], PAVE_WIDTH / 2 + 0.2, ri);
-          if (!blocked && runStart < 0) runStart = s;
-          if ((blocked || k === count) && runStart >= 0) {
-            const end = blocked ? Math.max(runStart, s - step) : s;
-            if (end - runStart > 1) {
-              const o0 = side * hw, o1 = side * (hw + PAVE_WIDTH);
-              pushQuad(chunk, at(runStart, o0, KERB_HEIGHT), at(end, o0, KERB_HEIGHT), at(end, o1, KERB_HEIGHT), at(runStart, o1, KERB_HEIGHT), PAVEMENT, up);
-              pushQuad(chunk, at(runStart, o0, 0.04), at(end, o0, 0.04), at(end, o0, KERB_HEIGHT), at(runStart, o0, KERB_HEIGHT), KERB, shadeFor(-nx * side, 0, -nz * side));
-            }
-            runStart = -1;
-          }
-        }
-      }
-      // dashed centre line on roads at least 6 m wide
-      if (hw >= 3) {
-        for (let s = 1; s + 2 < len; s += 7) {
-          const mx = x0 + ux * (s + 1), mz = z0 + uz * (s + 1);
-          if (index.covered(mx, mz, 1.5, ri)) continue;
-          pushQuad(chunk, at(s, -0.09, 0.05), at(s + 2, -0.09, 0.05), at(s + 2, 0.09, 0.05), at(s, 0.09, 0.05), PAINT, up);
-        }
-      }
-    }
-  });
-}
+// (streets: see streets.ts)
 
 // ---------- scenery: parked cars, trees, gravestones, pumpkins ----------
 
@@ -729,14 +749,41 @@ function poolGeometry(): THREE.BufferGeometry {
   return g;
 }
 
+/** The direction of a footprint's longest edge, as the yaw that turns a model's +Z axis to run along it. */
+function footprintYaw(f: Footprint): number {
+  let best = 0, yaw = 0;
+  for (let k = 0; k < f.xs.length; k += 1) {
+    const j = (k + 1) % f.xs.length;
+    const dx = f.xs[j]! - f.xs[k]!, dz = f.zs[j]! - f.zs[k]!;
+    const len = Math.hypot(dx, dz);
+    if (len > best) { best = len; yaw = Math.atan2(dx, dz); }
+  }
+  return yaw;
+}
+
+/** Puts a landmark where its footprint is: the body joins the buildings (so it dissolves in the cut-away), the glow is kept apart. */
+function placeLandmark(lm: Landmark, f: Footprint, chunks: Map<string, Chunk>, beacons: THREE.BufferGeometry[]): void {
+  const model = landmarkModel(lm.kind);
+  const m = new THREE.Matrix4().makeRotationY(footprintYaw(f)).setPosition(lm.x, 0, lm.z);
+  chunkOf(chunks, lm.x, lm.z).roofs.push(bakeShade(model.body.clone().applyMatrix4(m)));
+  beacons.push(model.glow.clone().applyMatrix4(m));
+}
+
 /** Everything that makes the city look like a city: returns the meshes to add to the world group. */
 export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.Object3D[] {
   style = STYLES[city] ?? STYLES['accra']!;
   const chunks = new Map<string, Chunk>();
+  const landmarks = landmarksOf(map.id);
+  const beacons: THREE.BufferGeometry[] = [];
   map.buildings.forEach((b, i) => {
     if (b.car !== undefined) return; // parked cars are drawn below
     const f = footprintOf(b);
     if (f === undefined) return;
+    const landmark = landmarks.find((l) => inside(f, l.x, l.z));
+    if (landmark !== undefined) {
+      placeLandmark(landmark, f, chunks, beacons); // a landmark stands where this plain building would
+      return;
+    }
     addBuilding(i, b, chunkOf(chunks, f.cx, f.cz));
   });
   // parked cars (they are solid buildings in the map data) and street scenery
@@ -748,7 +795,6 @@ export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.
     const m = new THREE.Matrix4().makeRotationY(Math.atan2(ux, uz)).setPosition(f.cx, 0, f.cz);
     chunkOf(chunks, f.cx, f.cz).cars.push(carTemplate(b.car - 1).clone().applyMatrix4(m));
   });
-  addStreet(map, chunks);
   const decorData = map.decor ?? [];
   for (let k = 0; k + 3 < decorData.length; k += 4) {
     const x = decorData[k]! / 10, z = decorData[k + 1]! / 10, kind = decorData[k + 2]!, seed = decorData[k + 3]!;
@@ -764,7 +810,7 @@ export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.
     const m = new THREE.Matrix4().makeRotationY(Math.atan2(-lamp.dz, lamp.dx)).setPosition(lamp.x, 0, lamp.z);
     chunk.lamps.push(lampGeometry().clone().applyMatrix4(m));
     const pool = poolGeometry().clone();
-    pool.translate(lamp.x + lamp.dx * 1.3, 0.08, lamp.z + lamp.dz * 1.3);
+    pool.translate(lamp.x + lamp.dx * 1.3, 0.12, lamp.z + lamp.dz * 1.3);
     chunk.pools.push(pool);
   }
 
@@ -774,8 +820,17 @@ export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.
   solid.color.set(tint);
   makeCutaway(wallMaterial);
   makeCutaway(solid);
+  patchWalls(wallMaterial, facadeMask);
+  const glassMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  glassMaterial.color.set(tint);
+  makeCutaway(glassMaterial);
+  patchGlass(glassMaterial);
   const lampMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
   const glow = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  // the light pools sit above every street layer (streets.ts orders its layers with a polygon offset, which would otherwise hide them)
+  glow.polygonOffset = true;
+  glow.polygonOffsetFactor = -8;
+  glow.polygonOffsetUnits = -8;
   const out: THREE.Object3D[] = [];
   /** Chunk key -> its centre, so the view can skip chunks that lie beyond the fog. */
   const merge = (geos: THREE.BufferGeometry[], material: THREE.Material, key: string, order = 0, name = '', keepUv = false): void => {
@@ -802,12 +857,24 @@ export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.
   };
   for (const [key, c] of chunks) {
     merge(c.walls, wallMaterial, key, 0, 'walls', true);
+    merge(c.glass, glassMaterial, key, 0, 'glass', true);
     // roofs, shop signs and parked cars all dissolve with the cut-away, so they share one mesh
     merge([...c.roofs, ...c.signs, ...c.cars], solid, key, 0, 'solid');
     // trees, graves, lamp posts and pavements stay put (only buildings dissolve)
-    merge([...c.props, ...c.lamps, ...c.street], lampMaterial, key, 0, 'scenery');
+    merge([...c.props, ...c.lamps], lampMaterial, key, 0, 'scenery');
     merge(c.pools, glow, key, 2, 'pools');
   }
+  if (beacons.length > 0) {
+    // the glowing parts of landmarks are not fogged and not culled, so they show from far away
+    const first = out.length;
+    merge(beacons, new THREE.MeshBasicMaterial({ vertexColors: true, fog: false }), '0,0', 0, 'beacons');
+    const mesh = out[first];
+    if (mesh !== undefined) {
+      delete mesh.userData['cx'];
+      delete mesh.userData['cz'];
+    }
+  }
+  out.push(...buildStreets(map, tint));
   return out;
 }
 

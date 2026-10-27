@@ -66,6 +66,8 @@ export interface UiState {
   readonly showColliders: boolean;
   /** Number of checkpoints on the current map. */
   readonly checkpointTotal: number;
+  /** The checkpoints' positions in metres, for ordering racers who are on the same leg. */
+  readonly checkpoints: readonly { readonly x: number; readonly z: number }[];
   /** Direction to the next checkpoint relative to the car's heading (degrees, + = to the left) and distance in metres. */
   readonly hint: { readonly angle: number; readonly distance: number } | null;
   /** A first-time tip to show over the race, or null. */
@@ -665,6 +667,7 @@ export class Game {
       graphics: this.graphics,
       showColliders: this.showColliders,
       checkpointTotal: this.map?.checkpoints.length ?? 0,
+      checkpoints: this.checkpointList(),
       hint: this.hint(frame, snap?.localSlot ?? 0),
       tip: this.tipText,
       rematchRequested: this.wantRematch,
@@ -990,6 +993,18 @@ export class Game {
         });
     }
     this.view.renderTitle(this.build, this.style, dt, picked !== undefined && this.view.mapId === picked);
+  }
+
+  private cpMapId = '';
+  private cpList: { x: number; z: number }[] = [];
+  /** The checkpoints in metres (rebuilt only when the map changes). */
+  private checkpointList(): readonly { x: number; z: number }[] {
+    if (this.map === undefined) return [];
+    if (this.map.id !== this.cpMapId) {
+      this.cpMapId = this.map.id;
+      this.cpList = this.map.checkpoints.map((c) => ({ x: c.x / 10, z: c.z / 10 }));
+    }
+    return this.cpList;
   }
 
   /** The route the menu flyover shows: the middle one of the three on screen, once a city is chosen. */

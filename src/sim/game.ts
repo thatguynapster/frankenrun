@@ -758,6 +758,14 @@ function beginRace(s: GameState, frame: number, prep: PreparedMap, participants:
   };
 }
 
+/**
+ * The results do not stop the race for anyone still running: a racer who has not finished (and has not gone back to the lobby)
+ * keeps racing, bots included, so late finishers still get a time and nobody is marked as not finishing while still on the road.
+ */
+function stragglersRacing(players: readonly PlayerState[], humans: number, frame: number): boolean {
+  return players.some((p) => p.inRace && p.finishTick < 0 && !p.rematch && (isBotSeat(p, humans) || isHere(p, frame, humans)));
+}
+
 export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep: PreparedMap): GameState {
   const frame = state.frame + 1;
   const humans = state.players.length - state.bots;
@@ -766,10 +774,11 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   const reclaimed = state.players.map((p) => (p.isBot && p.slot < humans && lobbyNow && rawInputs[p.slot]?.present === true ? { ...p, isBot: false, brain: NEW_BRAIN, ready: false, lastSeen: frame } : p));
   const stateNow: GameState = reclaimed.some((p, i) => p !== state.players[i]) ? { ...state, players: reclaimed } : state;
   // AI racers are driven by the simulation itself, from the state, so every client agrees on them.
+  const botView: GameState = state.phase === 'RESULTS' && stragglersRacing(stateNow.players, humans, frame) ? { ...stateNow, phase: 'RACING' } : stateNow;
   const brains = new Map<number, Brain>();
   const inputs = stateNow.players.map((p) => {
     if (!isBotSeat(p, humans)) return normaliseInput(rawInputs[p.slot]);
-    const bot = botInput(stateNow, prep, p.slot, frame);
+    const bot = botInput(botView, prep, p.slot, frame);
     brains.set(p.slot, bot.brain);
     return normaliseInput(bot.input);
   });
@@ -840,7 +849,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   }
 
   const driving = phase === 'COUNTDOWN' || phase === 'RACING' || phase === 'RESULTS';
-  const racing = phase === 'RACING';
+  const racing = phase === 'RACING' || (phase === 'RESULTS' && stragglersRacing(players, humans, frame));
   const joints: DeterministicPhysicsJoint3D[] = [];
   const ropesToRemove: string[] = [];
 
@@ -1024,7 +1033,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       }
 
       // --- vehicle controls ---
-      const live = racing && frame >= frozenUntil && p.finishTick < 0; // a finished monster stops and brakes
+      const live = racing && frame >= frozenUntil && p.finishTick < 0 && !p.rematch; // a finished monster stops and brakes
 
       // --- Hopper Haunches: hold to crouch and charge, let go to leap; no steering until it lands ---
       const hop = legsOf(p.build).hop;
@@ -1404,7 +1413,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     const racersHuman = players.filter((p) => p.inRace && !isBotSeat(p, humans));
     const allDone = racersHuman.length > 0 && racersHuman.every((p) => p.finishTick >= 0);
     const firstFinish = finishOrder.length > 0 ? players[finishOrder[0]!]!.finishTick : -1;
-    if (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS)) {
+    if (phase === 'RACING' && (allDone || (firstFinish >= 0 && frame - firstFinish >= FINISH_WINDOW_TICKS))) {
       phase = 'RESULTS';
       phaseStart = frame;
     }

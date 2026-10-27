@@ -7,7 +7,7 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "2eb3dddbfbde47d3b3146306f2d8ba8741710c5346aedfa564c93074236d5429"
+  "engineIdentityHash": "5f5b7e1b74a916d0f95894df30accf4cacf33c43a4ac65091b53d09c1c5b309a"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */
@@ -24,18 +24,38 @@ export const mapAssets: readonly { name: string; digest: string; byteLength: num
   },
   {
     "name": "map-london-piccadilly",
-    "digest": "96e1b15ba141071db9198c106438160e128f4aecf11a45ce62076a2a71a5d6d7",
-    "byteLength": 1720822
+    "digest": "68899c90aa84ac63b9754a4c1c89d6475943d44c08e73da042e9baee06e098c1",
+    "byteLength": 1704383
   },
   {
     "name": "map-london-shoreditch",
-    "digest": "c6aab6ef5b944f77de5bfd25531629e51729f0de2c89ffc8a56611ac0bb923d4",
-    "byteLength": 756135
+    "digest": "5146392c1369a2df773d4f6cae0768a896e703ee4ac35464b1c26a4e53a2414e",
+    "byteLength": 748904
   },
   {
     "name": "map-london-westminster-soho",
-    "digest": "a50d3e2a82f603cc233d415dfe9ef3b7d3f6440412b1af21bd55a746aaf1cd4a",
-    "byteLength": 995817
+    "digest": "5b4d8f7f76ef3ba92d8991f1a50991ed2510aee63d03011424f68c7756f6c3f9",
+    "byteLength": 985023
+  },
+  {
+    "name": "map-newyork-brooklyn",
+    "digest": "46d16687fda2fa4dec36be929ab8bb7ba01ba9d1513fc1e0b89efe3b87140825",
+    "byteLength": 1507204
+  },
+  {
+    "name": "map-newyork-lower-manhattan",
+    "digest": "3513bf941100f401cbdbc482c5b8ae1b45577281d16982c3358d0bdc7c49844a",
+    "byteLength": 596838
+  },
+  {
+    "name": "map-newyork-midtown",
+    "digest": "26c733465335e1b2ac2ca2aee5d1d44f3360a426454b4b91a61e758c84d54034",
+    "byteLength": 621917
+  },
+  {
+    "name": "map-newyork-west-village",
+    "digest": "6a5c7f70e8391afe049195ed247cf261ebaa02deb2c74a0d711e2ad811535502",
+    "byteLength": 780177
   },
   {
     "name": "map-osu-backstreets",

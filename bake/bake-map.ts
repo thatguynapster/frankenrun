@@ -362,7 +362,7 @@ for (const el of dIn.elements) {
 }
 // Every wall is a physics body that is always loaded (they are not streamed like buildings), so a city with hundreds of
 // garden walls slows every physics tick. Dense cities keep only the long walls near the route, the ones that matter.
-const MAX_WALLS = 60, MIN_WALL_M = 8, WALL_NEAR_ROUTE_M = 25;
+const MAX_WALLS = 12, MIN_WALL_M = 8, WALL_NEAR_ROUTE_M = 25;
 let wallsDropped = 0;
 if (cityOfRoute(id) !== 'accra' && walls.length > MAX_WALLS) {
   const wallLen = (w: WallData): number => Math.hypot(w.pts[2] - w.pts[0], w.pts[3] - w.pts[1]) / 10;
@@ -417,6 +417,18 @@ for (const l of lampSpots) {
   if (lampAnchors < LAMP_ANCHOR_CAP && nearRoute(p) && onStraight(p) && spaced(p)) { anchors.push(p); lampAnchors += 1; }
 }
 console.log(`  lamps ${lampSpots.length}, of them tentacle anchors ${lampAnchors}`);
+// Every anchor is a physics body that is always loaded, so a map with hundreds of them slows every tick (the main cost on
+// the dense city maps). Dense cities keep only the anchors within reach of the route.
+const ANCHOR_REACH_M = 45, MAX_ANCHORS = 160;
+let anchorsDropped = 0;
+if (cityOfRoute(id) !== 'accra' && anchors.length > MAX_ANCHORS) {
+  const near = anchors.filter((a) => ROUTE_SAMPLES.some((p) => dist(p, a) <= ANCHOR_REACH_M));
+  const step = Math.max(1, Math.ceil(near.length / MAX_ANCHORS));
+  const kept = near.filter((_, i) => i % step === 0);
+  anchorsDropped = anchors.length - kept.length;
+  anchors.length = 0;
+  anchors.push(...kept);
+}
 
 // ---- scenery and parked cars (cars become solid, like buildings; they are added last so no anchor sits on one) ----
 const lampBounds = { minX: dm(Math.min(...lxs) - 250), maxX: dm(Math.max(...lxs) + 250), minZ: dm(Math.min(...lzs) - 250), maxZ: dm(Math.max(...lzs) + 250) };
@@ -522,7 +534,7 @@ mkdirSync(CITY_DIR, { recursive: true });
 writeFileSync(`bake/out/${id}.map.json`, json);
 writeFileSync(`${CITY_DIR}/${id}.map.json.gz`, gz);
 console.log(`${id}: ${(json.length / 1024).toFixed(0)} KB json, ${(gz.length / 1024).toFixed(0)} KB gzip`);
-console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}, set back from every road and left without one ${pruned}), walls ${walls.length} (${wallsDropped} short or distant ones left out), anchors ${anchors.length}, lamps ${lamps.length}, junctions ${junctions.length}`);
+console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}, set back from every road and left without one ${pruned}), walls ${walls.length} (${wallsDropped} short or distant ones left out), anchors ${anchors.length} (${anchorsDropped} far from the route left out), lamps ${lamps.length}, junctions ${junctions.length}`);
 console.log(`  checkpoints ${checkpoints.length}, route ${Math.round(total)} m, OSM base ${bIn.osmDate}`);
 const BUDGET = 4 * 1024 * 1024;
 if (gz.length > BUDGET) { console.error(`BUDGET EXCEEDED: ${gz.length} > ${BUDGET}`); process.exit(1); }

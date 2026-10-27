@@ -51,4 +51,9 @@ export const ROUTES: Readonly<Record<string, RouteDef>> = {
   'london-westminster-soho': { id: 'london-westminster-soho', name: 'Westminster to Soho', start: [51.4995, -0.127], end: [51.5152, -0.1415], roadsFile: 'bake/cache/roads-london-westminster-soho.json' },
   'london-shoreditch': { id: 'london-shoreditch', name: 'Shoreditch Back Streets', start: [51.523, -0.077], end: [51.529, -0.098], roadsFile: 'bake/cache/roads-london-shoreditch.json' },
   'london-piccadilly': { id: 'london-piccadilly', name: 'Piccadilly to Holborn', start: [51.5027, -0.1527], end: [51.5174, -0.12], via: [[51.51, -0.1342]], roadsFile: 'bake/cache/roads-london-westminster-soho.json' },
+  // ---- New York (proposed; not yet baked) ----
+  'newyork-midtown': { id: 'newyork-midtown', name: 'Midtown Grid', start: [40.758, -73.9855], end: [40.7359, -73.9911], roadsFile: 'bake/cache/roads-newyork-midtown.json' },
+  'newyork-lower-manhattan': { id: 'newyork-lower-manhattan', name: 'Lower Manhattan Maze', start: [40.7033, -74.017], end: [40.7158, -73.9937], roadsFile: 'bake/cache/roads-newyork-lower-manhattan.json' },
+  'newyork-brooklyn': { id: 'newyork-brooklyn', name: 'Brooklyn Brownstones', start: [40.672, -73.978], end: [40.7033, -73.989], roadsFile: 'bake/cache/roads-newyork-brooklyn.json' },
+  'newyork-west-village': { id: 'newyork-west-village', name: 'West Village Twist', start: [40.7308, -73.9973], end: [40.7424, -74.006], roadsFile: 'bake/cache/roads-newyork-west-village.json' },
 };
