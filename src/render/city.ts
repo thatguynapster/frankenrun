@@ -23,19 +23,21 @@ export interface CityStyle {
   readonly signChance: number;
   readonly chimneyChance: number;
   readonly tankChance: number;
+  /** Palm trees among the street trees (warm cities only). */
+  readonly palms: boolean;
 }
 
 const STYLES: Readonly<Record<string, CityStyle>> = {
   // Accra: sun-faded pastel plaster and tin roofs
-  accra: { facades: [0xe8d9b5, 0xd9a441, 0xc7704f, 0xa9c9a4, 0x8fb4d8, 0xe3a6b4, 0xf0ebe0, 0xcfa27a, 0x9fd0c8], roofs: [0x9c4a3a, 0x6d7a86, 0xa3552f, 0x4f6f6a, 0x7a6a8a], flatRoof: 0x8c8f99, signs: [0xff4fa3, 0x41e0ff, 0xffd23b, 0x7dff6a, 0xff7a2e, 0xb06bff], signChance: 0.4, chimneyChance: 0.25, tankChance: 0.3 },
+  accra: { facades: [0xe8d9b5, 0xd9a441, 0xc7704f, 0xa9c9a4, 0x8fb4d8, 0xe3a6b4, 0xf0ebe0, 0xcfa27a, 0x9fd0c8], roofs: [0x9c4a3a, 0x6d7a86, 0xa3552f, 0x4f6f6a, 0x7a6a8a], flatRoof: 0x8c8f99, signs: [0xff4fa3, 0x41e0ff, 0xffd23b, 0x7dff6a, 0xff7a2e, 0xb06bff], signChance: 0.4, chimneyChance: 0.25, tankChance: 0.3, palms: true },
   // London: London stock brick, red brick and cream stucco under slate, with a chimney on most houses
-  london: { facades: [0xb5654a, 0xa05a45, 0xc98a5e, 0xd9c7a0, 0x8d7a6a, 0xe8dcc0, 0x9a6b52, 0x6f7a86], roofs: [0x4a5668, 0x5a4a4a, 0x3d4658, 0x6b3f36], flatRoof: 0x6f7480, signs: [0xd9242f, 0x2f6bd9, 0x2fa05a, 0xffd23b, 0xf0e6d8], signChance: 0.35, chimneyChance: 0.65, tankChance: 0.15 },
+  london: { facades: [0xb5654a, 0xa05a45, 0xc98a5e, 0xd9c7a0, 0x8d7a6a, 0xe8dcc0, 0x9a6b52, 0x6f7a86], roofs: [0x4a5668, 0x5a4a4a, 0x3d4658, 0x6b3f36], flatRoof: 0x6f7480, signs: [0xd9242f, 0x2f6bd9, 0x2fa05a, 0xffd23b, 0xf0e6d8], signChance: 0.35, chimneyChance: 0.65, tankChance: 0.15, palms: false },
   // New York: brick and brownstone, flat roofs with water towers
-  newyork: { facades: [0x9a4e3a, 0x7a4636, 0xb26a45, 0x8a6a56, 0xc7a070, 0x6f6a78, 0xa8574a, 0x5f6a7a], roofs: [0x5a5560, 0x4a4a55], flatRoof: 0x4f5360, signs: [0xff3b3b, 0xffd23b, 0x41e0ff, 0xff7a2e, 0xf0f0ff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.55 },
+  newyork: { facades: [0x9a4e3a, 0x7a4636, 0xb26a45, 0x8a6a56, 0xc7a070, 0x6f6a78, 0xa8574a, 0x5f6a7a], roofs: [0x5a5560, 0x4a4a55], flatRoof: 0x4f5360, signs: [0xff3b3b, 0xffd23b, 0x41e0ff, 0xff7a2e, 0xf0f0ff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.55, palms: false },
   // Tokyo: pale concrete and tile, flat roofs, signs everywhere
-  tokyo: { facades: [0xd8d8de, 0xbfc4cf, 0xe8e2d4, 0x9aa6b8, 0xcfd6c8, 0xb8a89a, 0xe0d0d6, 0x8fa0a8], roofs: [0x4a5058, 0x3a4a5a, 0x5a4a44], flatRoof: 0x7a808c, signs: [0xff2f8a, 0x2fe0ff, 0xffe02f, 0x6aff4f, 0xff5a2f, 0xb04fff, 0xffffff], signChance: 0.75, chimneyChance: 0.02, tankChance: 0.4 },
+  tokyo: { facades: [0xd8d8de, 0xbfc4cf, 0xe8e2d4, 0x9aa6b8, 0xcfd6c8, 0xb8a89a, 0xe0d0d6, 0x8fa0a8], roofs: [0x4a5058, 0x3a4a5a, 0x5a4a44], flatRoof: 0x7a808c, signs: [0xff2f8a, 0x2fe0ff, 0xffe02f, 0x6aff4f, 0xff5a2f, 0xb04fff, 0xffffff], signChance: 0.75, chimneyChance: 0.02, tankChance: 0.4, palms: false },
   // Mexico City: strong colour: terracotta, ochre, pink, turquoise and cobalt
-  mexicocity: { facades: [0xd9604a, 0xe8a23a, 0xe36a9a, 0x2fb0b8, 0x3a6ad0, 0xf0d070, 0xc9503a, 0x7bc86a, 0xe8d9b5], roofs: [0xb04a2f, 0x8a3f2f, 0x6a6f7a], flatRoof: 0x9a8f86, signs: [0xff4f7a, 0xffd23b, 0x41e0b0, 0xff7a2e, 0x6a9bff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.5 },
+  mexicocity: { facades: [0xd9604a, 0xe8a23a, 0xe36a9a, 0x2fb0b8, 0x3a6ad0, 0xf0d070, 0xc9503a, 0x7bc86a, 0xe8d9b5], roofs: [0xb04a2f, 0x8a3f2f, 0x6a6f7a], flatRoof: 0x9a8f86, signs: [0xff4f7a, 0xffd23b, 0x41e0b0, 0xff7a2e, 0x6a9bff], signChance: 0.5, chimneyChance: 0.05, tankChance: 0.5, palms: true },
 };
 let style: CityStyle = STYLES['accra']!;
 const FACADES_OF = (): readonly number[] => style.facades;
@@ -661,7 +663,8 @@ function carTemplate(colorIndex: number): THREE.BufferGeometry {
 
 function decorTemplate(kind: number, seed: number): THREE.BufferGeometry {
   const leaf = [0x4f7a3a, 0xc96a1e, 0x6a4a8a][seed % 3]!;
-  const variant = kind === 0 ? seed % 3 : 0;
+  let variant = kind === 0 ? seed % 3 : 0;
+  if (variant === 1 && !style.palms) variant = 3; // no palms outside warm cities: a round tree instead
   return template(`decor${kind}-${variant}`, () => {
     const s = new Shape();
     if (kind === 0) {

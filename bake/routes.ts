@@ -56,4 +56,14 @@ export const ROUTES: Readonly<Record<string, RouteDef>> = {
   'newyork-lower-manhattan': { id: 'newyork-lower-manhattan', name: 'Lower Manhattan Maze', start: [40.7033, -74.017], end: [40.7158, -73.9937], roadsFile: 'bake/cache/roads-newyork-lower-manhattan.json' },
   'newyork-brooklyn': { id: 'newyork-brooklyn', name: 'Brooklyn Brownstones', start: [40.672, -73.978], end: [40.7033, -73.989], roadsFile: 'bake/cache/roads-newyork-brooklyn.json' },
   'newyork-west-village': { id: 'newyork-west-village', name: 'West Village Twist', start: [40.7308, -73.9973], end: [40.7424, -74.006], roadsFile: 'bake/cache/roads-newyork-west-village.json' },
+  // ---- Tokyo (proposed; not yet baked) ----
+  'tokyo-shibuya-shinjuku': { id: 'tokyo-shibuya-shinjuku', name: 'Shibuya to Shinjuku', start: [35.658, 139.7016], end: [35.6896, 139.7004], roadsFile: 'bake/cache/roads-tokyo-shibuya-shinjuku.json' },
+  'tokyo-asakusa-akihabara': { id: 'tokyo-asakusa-akihabara', name: 'Asakusa to Akihabara', start: [35.7148, 139.7967], end: [35.6984, 139.7731], roadsFile: 'bake/cache/roads-tokyo-asakusa-akihabara.json' },
+  'tokyo-ginza-kanda': { id: 'tokyo-ginza-kanda', name: 'Ginza to Kanda', start: [35.6655, 139.7707], end: [35.6918, 139.7708], roadsFile: 'bake/cache/roads-tokyo-ginza-kanda.json' },
+  'tokyo-harajuku-ebisu': { id: 'tokyo-harajuku-ebisu', name: 'Harajuku to Ebisu', start: [35.6702, 139.7027], end: [35.6467, 139.71], roadsFile: 'bake/cache/roads-tokyo-harajuku-ebisu.json' },
+  // ---- Mexico City ----
+  'mexicocity-reforma': { id: 'mexicocity-reforma', name: 'Reforma Run', start: [19.4236, -99.175], end: [19.435, -99.1405], roadsFile: 'bake/cache/roads-mexicocity-reforma.json' },
+  'mexicocity-centro': { id: 'mexicocity-centro', name: 'Centro Histórico Maze', start: [19.426, -99.1245], end: [19.4416, -99.139], via: [[19.433, -99.1325]], roadsFile: 'bake/cache/roads-mexicocity-centro.json' },
+  'mexicocity-roma-condesa': { id: 'mexicocity-roma-condesa', name: 'Roma and Condesa', start: [19.4105, -99.173], end: [19.43, -99.1585], via: [[19.4195, -99.162]], roadsFile: 'bake/cache/roads-mexicocity-roma-condesa.json' },
+  'mexicocity-coyoacan': { id: 'mexicocity-coyoacan', name: 'Coyoacán Cobbles', start: [19.3565, -99.1735], end: [19.3553, -99.1625], via: [[19.3498, -99.1618]], roadsFile: 'bake/cache/roads-mexicocity-coyoacan.json' },
 };

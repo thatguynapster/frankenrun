@@ -7,7 +7,7 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "5f5b7e1b74a916d0f95894df30accf4cacf33c43a4ac65091b53d09c1c5b309a"
+  "engineIdentityHash": "c179eaa8693760fb3cc281cdd1aa2a3327181de992edf6543c27ab9a50347eb0"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */
@@ -36,6 +36,26 @@ export const mapAssets: readonly { name: string; digest: string; byteLength: num
     "name": "map-london-westminster-soho",
     "digest": "5b4d8f7f76ef3ba92d8991f1a50991ed2510aee63d03011424f68c7756f6c3f9",
     "byteLength": 985023
+  },
+  {
+    "name": "map-mexicocity-centro",
+    "digest": "a921d22d810e57e4e501f14b07e78579086e98522bd5fc96b858052b20fcb403",
+    "byteLength": 811914
+  },
+  {
+    "name": "map-mexicocity-coyoacan",
+    "digest": "d9d6e54699dce26faffc9cdcf93935016cfc28cca75a70a6fd8cdf15d8aacfdb",
+    "byteLength": 148516
+  },
+  {
+    "name": "map-mexicocity-reforma",
+    "digest": "4b828e626dc34727fe77a73e96e3050e6cf160308cc142de24c816fd8f272304",
+    "byteLength": 1169010
+  },
+  {
+    "name": "map-mexicocity-roma-condesa",
+    "digest": "e9a8f02835d832384116d0e364dcecfc1108998a186e34d6ca3adacdb7bf3c8d",
+    "byteLength": 1270761
   },
   {
     "name": "map-newyork-brooklyn",
@@ -71,5 +91,25 @@ export const mapAssets: readonly { name: string; digest: string; byteLength: num
     "name": "map-route1",
     "digest": "4134b226bde755fcca022f8e6d7df70fb7afbfa7e48e34a844ffe79add9edde2",
     "byteLength": 565935
+  },
+  {
+    "name": "map-tokyo-asakusa-akihabara",
+    "digest": "d149beaeb9a7b74ae14a6758ef3db581e95c67508aa3f192bf2b1ba3a55d8302",
+    "byteLength": 3284977
+  },
+  {
+    "name": "map-tokyo-ginza-kanda",
+    "digest": "eb0d50058bc68da34f04cea0bd87b041a73cfa23a68d5f56342d336cef1ebc97",
+    "byteLength": 953680
+  },
+  {
+    "name": "map-tokyo-harajuku-ebisu",
+    "digest": "bb49781cb008ed86ffcde82eea4f5e4150c59724a22dcf6bf2a3fdc22250ee1c",
+    "byteLength": 1574224
+  },
+  {
+    "name": "map-tokyo-shibuya-shinjuku",
+    "digest": "c56bad2512056da288d5662c8bca60d4eae9751379d3cc9caa94afd789813bbb",
+    "byteLength": 1523148
   }
 ];

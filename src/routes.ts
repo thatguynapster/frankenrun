@@ -14,6 +14,8 @@ export const CITIES: readonly CityInfo[] = [
   { id: 'accra', name: 'Accra', country: 'Ghana', blurb: 'Back lanes, old town and Ring Road' },
   { id: 'london', name: 'London', country: 'England', blurb: 'Brick terraces, fog and winding old streets' },
   { id: 'newyork', name: 'New York', country: 'USA', blurb: 'Towers, brownstones and avenues that never end' },
+  { id: 'tokyo', name: 'Tokyo', country: 'Japan', blurb: 'Neon canyons, tight old lanes and endless signs' },
+  { id: 'mexicocity', name: 'Mexico City', country: 'Mexico', blurb: 'Painted facades, plazas and a Day of the Dead dusk' },
 ];
 
 export interface RouteInfo {
@@ -38,6 +40,14 @@ export const ROUTES: readonly RouteInfo[] = [
   { id: 'newyork-lower-manhattan', city: 'newyork', name: 'Lower Manhattan Maze', km: 3.0, blurb: 'From the Battery through the crooked old streets to Chinatown' },
   { id: 'newyork-brooklyn', city: 'newyork', name: 'Brooklyn Brownstones', km: 4.1, blurb: 'Park Slope to DUMBO: a long run past brownstones, with six sharp turns' },
   { id: 'newyork-west-village', city: 'newyork', name: 'West Village Twist', km: 1.7, blurb: 'Short and tight: angled streets where the grid breaks' },
+  { id: 'tokyo-shibuya-shinjuku', city: 'tokyo', name: 'Shibuya to Shinjuku', km: 4.1, blurb: 'The long fast run: a smooth sweep north past Yoyogi Park' },
+  { id: 'tokyo-asakusa-akihabara', city: 'tokyo', name: 'Asakusa to Akihabara', km: 3.7, blurb: 'Old-town grid from Senso-ji, then a long diagonal and a flat finish' },
+  { id: 'tokyo-ginza-kanda', city: 'tokyo', name: 'Ginza to Kanda', km: 3.4, blurb: 'Crooked back streets first, then a clean run up the main avenue' },
+  { id: 'tokyo-harajuku-ebisu', city: 'tokyo', name: 'Harajuku to Ebisu', km: 3.0, blurb: 'The easy one: a gentle winding line down tree-lined back streets' },
+  { id: 'mexicocity-reforma', city: 'mexicocity', name: 'Reforma Run', km: 4.1, blurb: 'The long fast run: Paseo de la Reforma past the Angel of Independence' },
+  { id: 'mexicocity-centro', city: 'mexicocity', name: 'Centro Histórico Maze', km: 3.6, blurb: 'La Merced through the Zócalo to Garibaldi: narrow old streets, 15 sharp turns' },
+  { id: 'mexicocity-roma-condesa', city: 'mexicocity', name: 'Roma and Condesa', km: 3.2, blurb: 'The easy one: tree-lined winding streets with gentle corners' },
+  { id: 'mexicocity-coyoacan', city: 'mexicocity', name: 'Coyoacán Cobbles', km: 2.3, blurb: 'Short and twisty: colonial lanes around the old square' },
 ];
 
 /** The routes of one city, in picker order. */
