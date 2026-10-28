@@ -1,0 +1,540 @@
+// Bakes cached OSM data for a preset route into the compact map the game loads (dev-only, deterministic).
+//   node scripts/run-ts.mjs bake/bake-map.ts route1
+// Output: public/cdn-assets/accra/<id>.map.json.gz (shipped) and bake/out/<id>.map.json (digest source).
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
+import { createDeterministicPhysicsWorld3D, stepDeterministicPhysicsWorld3D } from '@series-inc/rundot-syncplay/creator';
+import { cityOfRoute, dist, project, type Pt } from './lib/geo.ts';
+import type { BuildingData, MapData, RoadSeg, WallData } from '../src/sim/mapdata.ts';
+import { ROUTES } from './routes.ts';
+import { placeLamps } from './lamps.ts';
+import { carCorners, placeDecor } from './decor.ts';
+
+const id = process.argv[2] ?? 'route1';
+const def = ROUTES[id];
+if (!def) throw new Error(`unknown route ${id}`);
+// Data source: the reproducible Geofabrik extract by default; SOURCE=overpass uses the Overpass cache instead.
+const SOURCE = process.env['SOURCE'] ?? 'pbf';
+const cache = (name: string): string => (name === 'corridor' || SOURCE === 'overpass' ? `bake/cache/${id}-${name}.json` : `bake/cache/${id}-pbf-${name}.json`);
+
+interface Geom { lat: number; lon: number }
+interface El { type: string; id: number; tags?: Record<string, string>; geometry?: Geom[]; lat?: number; lon?: number }
+const load = (name: string): { osmDate: string; elements: El[] } => {
+  const j = JSON.parse(readFileSync(cache(name), 'utf8')) as { osm3s?: { timestamp_osm_base?: string }; elements: El[] };
+  return { osmDate: j.osm3s?.timestamp_osm_base ?? '?', elements: j.elements };
+};
+const corridor = JSON.parse(readFileSync(cache('corridor'), 'utf8')) as { polyline: Pt[]; length: number; bbox: Record<string, number> };
+
+// ---- tunables (spec values) ----
+const ROAD_HALF_WIDTH_M: Record<string, number> = { motorway: 7, trunk: 6, primary: 5, secondary: 4, tertiary: 3.5, residential: 3, unclassified: 2, living_street: 2, service: 2, pedestrian: 2 };
+const SIMPLIFY_ROAD_M = 1.5, SIMPLIFY_BUILDING_M = 1.0, MIN_BUILDING_AREA_M2 = 20;
+const MAX_HULL_VERTS = 8;
+const dm = (m: number): number => Math.round(m * 10);
+
+// ---- geometry helpers ----
+function simplify(pts: Pt[], tol: number): Pt[] {
+  if (pts.length < 3) return pts;
+  const keep = new Array<boolean>(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    let worst = -1, wd = tol;
+    for (let i = a + 1; i < b; i += 1) { const d = segDist(pts[i]!, pts[a]!, pts[b]!); if (d > wd) { wd = d; worst = i; } }
+    if (worst >= 0) { keep[worst] = true; stack.push([a, worst], [worst, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+function segDist(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+  const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / l2));
+  return Math.hypot(p.x - (a.x + t * dx), p.z - (a.z + t * dz));
+}
+const area = (pts: Pt[]): number => { let s = 0; for (let i = 0; i < pts.length; i += 1) { const a = pts[i]!, b = pts[(i + 1) % pts.length]!; s += a.x * b.z - b.x * a.z; } return Math.abs(s) / 2; };
+function hull(points: Pt[]): Pt[] {
+  const p = [...points].sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o: Pt, a: Pt, b: Pt): number => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower: Pt[] = [], upper: Pt[] = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, q) <= 0) lower.pop(); lower.push(q); }
+  for (let i = p.length - 1; i >= 0; i -= 1) { const q = p[i]!; while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+/** Reduce a convex polygon to <= n vertices by repeatedly removing the vertex whose removal loses the least area. */
+function reduceHull(h: Pt[], n: number): Pt[] {
+  const out = [...h];
+  while (out.length > n) {
+    let best = 0, bestLoss = Infinity;
+    for (let i = 0; i < out.length; i += 1) {
+      const a = out[(i + out.length - 1) % out.length]!, b = out[i]!, c = out[(i + 1) % out.length]!;
+      const loss = Math.abs((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)) / 2;
+      if (loss < bestLoss) { bestLoss = loss; best = i; }
+    }
+    out.splice(best, 1);
+  }
+  return out;
+}
+/** Smallest-area oriented rectangle around a polygon (rotating over the polygon's edge directions). */
+function boundingRect(pts: Pt[]): Pt[] {
+  let best: Pt[] = [], bestArea = Infinity;
+  for (let i = 0; i < pts.length; i += 1) {
+    const a = pts[i]!, b = pts[(i + 1) % pts.length]!;
+    const len = dist(a, b) || 1, ux = (b.x - a.x) / len, uz = (b.z - a.z) / len;
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const p of pts) { const u = (p.x - a.x) * ux + (p.z - a.z) * uz, v = -(p.x - a.x) * uz + (p.z - a.z) * ux; minU = Math.min(minU, u); maxU = Math.max(maxU, u); minV = Math.min(minV, v); maxV = Math.max(maxV, v); }
+    const ar = (maxU - minU) * (maxV - minV);
+    if (ar < bestArea) {
+      bestArea = ar;
+      const pt = (u: number, v: number): Pt => ({ x: a.x + u * ux - v * uz, z: a.z + u * uz + v * ux });
+      best = [pt(minU, minV), pt(maxU, minV), pt(maxU, maxV), pt(minU, maxV)];
+    }
+  }
+  return best;
+}
+
+/** True when the physics engine accepts this convex footprint extruded to heightM as a static hull. */
+function engineAccepts(footprint: Pt[], heightM: number): boolean {
+  // Same representation as src/sim/world.ts: vertices relative to the footprint centre, placed by the child offset.
+  const cx = Math.round((footprint.reduce((t, p) => t + dm(p.x), 0) / footprint.length)), cz = Math.round((footprint.reduce((t, p) => t + dm(p.z), 0) / footprint.length));
+  const vertices: { x: number; y: number; z: number }[] = [];
+  for (const p of footprint) { const x = (dm(p.x) - cx) / 10, z = (dm(p.z) - cz) / 10; vertices.push({ x, y: 0, z }, { x, y: heightM, z }); }
+  try {
+    const w = createDeterministicPhysicsWorld3D([
+      { id: 's', kind: 'static', x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, shape: { type: 'compound', children: [{ shape: { type: 'hull', vertices }, offset: { x: cx / 10, y: 0, z: cz / 10 } }] }, layer: 1, mask: 1 },
+      { id: 'd', kind: 'dynamic', x: 0, y: 500, z: 0, vx: 0, vy: 0, vz: 0, mass: 1, orientation: { x: 0, y: 0, z: 0, w: 1 }, shape: { type: 'sphere', radius: 0.5 }, layer: 2, mask: 1 },
+    ]);
+    stepDeterministicPhysicsWorld3D(w, { gravityY: 0, dtTicks: 1 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The best collider the engine accepts for a footprint: full hull, then a 4-vertex hull, then a rectangle. */
+function colliderFor(pts: Pt[], heightM: number): Pt[] | undefined {
+  const full = reduceHull(hull(pts), MAX_HULL_VERTS);
+  const options = [full, reduceHull(full, 4), boundingRect(full)];
+  for (const o of options) if (o.length >= 3 && area(o) >= MIN_BUILDING_AREA_M2 * 0.5 && engineAccepts(o, heightM)) return o;
+  return undefined;
+}
+
+const flat = (pts: Pt[]): number[] => pts.flatMap((p) => [dm(p.x), dm(p.z)]);
+const toPts = (g: Geom[]): Pt[] => g.map((q) => project(q.lat, q.lon));
+
+// ---- roads ----
+const roadsIn = load('roads');
+const roads: RoadSeg[] = [];
+const roadLines: Pt[][] = [];
+const roadHalfWidths: number[] = [];
+for (const el of roadsIn.elements) {
+  if (el.type !== 'way' || !el.geometry || !el.tags?.['highway']) continue;
+  const hw = ROAD_HALF_WIDTH_M[el.tags['highway'].replace('_link', '')];
+  if (hw === undefined) continue; // footway/path/steps/cycleway/track are not road surface
+  const line = simplify(toPts(el.geometry), SIMPLIFY_ROAD_M);
+  if (line.length < 2) continue;
+  roadLines.push(line);
+  roadHalfWidths.push(hw);
+  roads.push({ hw: dm(hw), pts: flat(line) });
+}
+roads.sort((a, b) => a.pts[0]! - b.pts[0]! || a.pts[1]! - b.pts[1]! || a.pts.length - b.pts.length); // deterministic order
+
+// Spatial grid over road segments for the "near a road" test.
+const GRID = 40;
+const grid = new Map<string, [Pt, Pt, number][]>();
+const cellKey = (x: number, z: number): string => `${Math.floor(x / GRID)},${Math.floor(z / GRID)}`;
+roadLines.forEach((line, li) => { for (let i = 0; i + 1 < line.length; i += 1) {
+  const a = line[i]!, b = line[i + 1]!;
+  const x0 = Math.floor(Math.min(a.x, b.x) / GRID), x1 = Math.floor(Math.max(a.x, b.x) / GRID), z0 = Math.floor(Math.min(a.z, b.z) / GRID), z1 = Math.floor(Math.max(a.z, b.z) / GRID);
+  for (let gx = x0; gx <= x1; gx += 1) for (let gz = z0; gz <= z1; gz += 1) {
+    const k = `${gx},${gz}`; let l = grid.get(k); if (!l) grid.set(k, (l = [])); l.push([a, b, roadHalfWidths[li]!]);
+  }
+} });
+function distToRoad(p: Pt, within: number): number {
+  let best = Infinity;
+  const r = Math.ceil(within / GRID);
+  const cx = Math.floor(p.x / GRID), cz = Math.floor(p.z / GRID);
+  for (let gx = cx - r; gx <= cx + r; gx += 1) for (let gz = cz - r; gz <= cz + r; gz += 1)
+    for (const [a, b] of grid.get(`${gx},${gz}`) ?? []) { const d = segDist(p, a, b); if (d < best) best = d; }
+  return best;
+}
+
+// ---- clearance: a collider must never block a road ----
+function pointInPoly(p: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!, b = poly[j]!;
+    if (a.z > p.z !== b.z > p.z && p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+}
+function segSegDist(a: Pt, b: Pt, c: Pt, d: Pt): number {
+  const ccw = (p: Pt, q: Pt, r: Pt): number => (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+  if (ccw(a, b, c) * ccw(a, b, d) < 0 && ccw(c, d, a) * ccw(c, d, b) < 0) return 0;
+  return Math.min(segDist(a, c, d), segDist(b, c, d), segDist(c, a, b), segDist(d, a, b));
+}
+/** How much a polygon intrudes into a road lane: negative means a road runs through or past it with room to spare. */
+function roadIntrusion(poly: Pt[], margin: number): number {
+  let worst = Infinity; // smallest (distance - (half-width + margin)) over nearby road segments
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  const reach = 12;
+  const gx0 = Math.floor((Math.min(...xs) - reach) / GRID), gx1 = Math.floor((Math.max(...xs) + reach) / GRID);
+  const gz0 = Math.floor((Math.min(...zs) - reach) / GRID), gz1 = Math.floor((Math.max(...zs) + reach) / GRID);
+  for (let gx = gx0; gx <= gx1; gx += 1) {
+    for (let gz = gz0; gz <= gz1; gz += 1) {
+      for (const [a, b, hw] of grid.get(`${gx},${gz}`) ?? []) {
+        let d: number;
+        if (pointInPoly(a, poly) || pointInPoly(b, poly)) d = 0;
+        else {
+          d = Infinity;
+          for (let i = 0; i < poly.length; i += 1) d = Math.min(d, segSegDist(a, b, poly[i]!, poly[(i + 1) % poly.length]!));
+        }
+        worst = Math.min(worst, d - (hw + margin));
+      }
+    }
+  }
+  return worst;
+}
+const ROAD_CLEARANCE_M = 1.2; // free margin kept beside each road's half-width (no env override: a stray setting once shipped a broken map)
+
+// ---- clipping: cut a collider back from road lanes instead of dropping the whole building ----
+/** Keeps the part of a convex polygon where dot(n, p) >= c (Sutherland-Hodgman against one half-plane). */
+function clipHalfPlane(poly: Pt[], nx: number, nz: number, c: number): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!, b = poly[(i + 1) % poly.length]!;
+    const da = a.x * nx + a.z * nz - c, db = b.x * nx + b.z * nz - c;
+    if (da >= 0) out.push(a);
+    if ((da >= 0) !== (db >= 0)) {
+      const t = da / (da - db);
+      out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+    }
+  }
+  return out;
+}
+/** Separating-axis test between a convex polygon and a rectangle. */
+function convexOverlapsRect(poly: Pt[], rect: Pt[]): boolean {
+  const axes: Pt[] = [];
+  for (const shape of [poly, rect]) {
+    for (let i = 0; i < shape.length; i += 1) {
+      const a = shape[i]!, b = shape[(i + 1) % shape.length]!;
+      const ex = b.x - a.x, ez = b.z - a.z, len = Math.hypot(ex, ez) || 1;
+      axes.push({ x: -ez / len, z: ex / len });
+    }
+  }
+  for (const ax of axes) {
+    let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+    for (const p of poly) { const v = p.x * ax.x + p.z * ax.z; aMin = Math.min(aMin, v); aMax = Math.max(aMax, v); }
+    for (const p of rect) { const v = p.x * ax.x + p.z * ax.z; bMin = Math.min(bMin, v); bMax = Math.max(bMax, v); }
+    if (aMax <= bMin || bMax <= aMin) return false;
+  }
+  return true;
+}
+const MIN_PIECE_AREA_M2 = 3;
+const MAX_PIECES = 12;
+
+/**
+ * Collider pieces for a building: the (validated) hull of its footprint, cut back from every nearby road lane
+ * (half-width plus a free margin). A piece never overlaps a lane, but the rest of the building still blocks.
+ */
+function collidersFor(pts: Pt[], heightM: number): Pt[][] {
+  const base = colliderFor(pts, heightM);
+  if (!base) return [];
+  let pieces: Pt[][] = [base];
+  const xs = base.map((p) => p.x), zs = base.map((p) => p.z);
+  const reach = 12;
+  const gx0 = Math.floor((Math.min(...xs) - reach) / GRID), gx1 = Math.floor((Math.max(...xs) + reach) / GRID);
+  const gz0 = Math.floor((Math.min(...zs) - reach) / GRID), gz1 = Math.floor((Math.max(...zs) + reach) / GRID);
+  const seen = new Set<[Pt, Pt, number]>();
+  for (let gx = gx0; gx <= gx1; gx += 1) for (let gz = gz0; gz <= gz1; gz += 1) for (const seg of grid.get(`${gx},${gz}`) ?? []) seen.add(seg);
+  for (const [a, b, hw] of seen) {
+    const d = hw + ROAD_CLEARANCE_M;
+    const len = dist(a, b);
+    if (len < 0.01) continue;
+    const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len, nx = -uz, nz = ux;
+    const corner = (u: number, v: number): Pt => ({ x: a.x + ux * u + nx * v, z: a.z + uz * u + nz * v });
+    const rect = [corner(-d, -d), corner(len + d, -d), corner(len + d, d), corner(-d, d)];
+    const next: Pt[][] = [];
+    for (const piece of pieces) {
+      if (!convexOverlapsRect(piece, rect)) { next.push(piece); continue; }
+      const along = (u: number): number => a.x * ux + a.z * uz + u; // c for dot(u, p) >= c
+      const across = (v: number): number => a.x * nx + a.z * nz + v;
+      for (const cut of [
+        clipHalfPlane(piece, nx, nz, across(d)), // beyond the lane on the left
+        clipHalfPlane(piece, -nx, -nz, -across(-d)), // beyond the lane on the right
+        clipHalfPlane(piece, -ux, -uz, -along(-d)), // before the road's start
+        clipHalfPlane(piece, ux, uz, along(len + d)), // past the road's end
+      ]) if (cut.length >= 3 && area(cut) >= MIN_PIECE_AREA_M2) next.push(cut);
+    }
+    pieces = next.sort((p, q) => area(q) - area(p)).slice(0, MAX_PIECES);
+    if (pieces.length === 0) return [];
+  }
+  const accepted: Pt[][] = [];
+  for (const piece of pieces) {
+    const reduced = piece.length > MAX_HULL_VERTS ? reduceHull(hull(piece), MAX_HULL_VERTS) : piece;
+    for (const option of [reduced, boundingRect(reduced)]) {
+      if (option.length >= 3 && area(option) >= MIN_PIECE_AREA_M2 && engineAccepts(option, heightM)) { accepted.push(option); break; }
+    }
+  }
+  return accepted;
+}
+
+// ---- buildings ----
+/** Share of a footprint's area that lies on a road lane (within a road's half-width of its centre line), sampled on a 1.5 m grid. */
+const MAX_LANE_OVERLAP = 0.2;
+function laneOverlap(poly: Pt[]): number {
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  let inside = 0, onLane = 0;
+  for (let x = Math.min(...xs) + 0.75; x < Math.max(...xs); x += 1.5) {
+    for (let z = Math.min(...zs) + 0.75; z < Math.max(...zs); z += 1.5) {
+      const p = { x, z };
+      if (!pointInPoly(p, poly)) continue;
+      inside += 1;
+      const gx = Math.floor(x / GRID), gz = Math.floor(z / GRID);
+      let hit = false;
+      for (let dx = -1; dx <= 1 && !hit; dx += 1) for (let dz = -1; dz <= 1 && !hit; dz += 1) {
+        for (const [a, b, hw] of grid.get(`${gx + dx},${gz + dz}`) ?? []) if (segDist(p, a, b) <= hw) { hit = true; break; }
+      }
+      if (hit) onLane += 1;
+    }
+  }
+  return inside === 0 ? 0 : onLane / inside;
+}
+/** True when the route's centre line runs through the footprint (a covered passage or arcade the road goes under). */
+const ROUTE_SAMPLES: Pt[] = [];
+for (let i = 0; i + 1 < corridor.polyline.length; i += 1) {
+  const a = corridor.polyline[i]!, b = corridor.polyline[i + 1]!;
+  const n = Math.max(1, Math.ceil(dist(a, b) / 1.5));
+  for (let k = 0; k <= n; k += 1) ROUTE_SAMPLES.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
+}
+const routeThrough = (poly: Pt[]): boolean => {
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+  return ROUTE_SAMPLES.some((p) => p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1 && pointInPoly(p, poly));
+};
+const bIn = load('buildings');
+const buildings: BuildingData[] = [];
+let collidable = 0, dropped = 0, rejected = 0, clipped = 0, totalPieces = 0, onRoad = 0, pruned = 0;
+// A building set back further than this from every road lane cannot be reached by a monster (the frontages block the
+// way), so it is drawn but gets no collider. Dense cities have a lot of these, and every collider costs physics time.
+const COLLIDER_REACH_M = Number(process.env['REACH'] ?? 0) || Infinity; // off by default: dense blocks are nearly all within reach anyway
+for (const el of bIn.elements) {
+  if (el.type !== 'way' || !el.geometry || el.geometry.length < 4) { dropped += 1; continue; }
+  let pts = toPts(el.geometry);
+  if (dist(pts[0]!, pts[pts.length - 1]!) < 0.01) pts = pts.slice(0, -1);
+  if (pts.length < 3) { dropped += 1; continue; }
+  if (area(pts) < MIN_BUILDING_AREA_M2) { dropped += 1; continue; }
+  pts = simplify(pts, SIMPLIFY_BUILDING_M);
+  if (pts.length < 3) { dropped += 1; continue; }
+  // A footprint that sits on a road (a mapping slip, or a building the road was built through) would stand in the middle of
+  // the street: leave it out of the map entirely, for rendering and for collision.
+  if (laneOverlap(pts) >= MAX_LANE_OVERLAP || routeThrough(pts)) { onRoad += 1; continue; }
+  const levels = Number(el.tags?.['building:levels']);
+  const height = Number(el.tags?.['height']);
+  const hM = Number.isFinite(height) && height > 0 ? height : Number.isFinite(levels) && levels > 0 ? levels * 3 : 6;
+  const unreachable = COLLIDER_REACH_M !== Infinity && roadIntrusion(pts, 0) > COLLIDER_REACH_M;
+  if (unreachable) pruned += 1;
+  const pieces = unreachable ? [] : collidersFor(pts, hM);
+  const base = colliderFor(pts, hM);
+  if (pieces.length === 0) { if (!unreachable) rejected += 1; }
+  else {
+    collidable += 1;
+    totalPieces += pieces.length;
+    if (!base || pieces.length > 1 || area(pieces[0]!) < area(base) * 0.98) clipped += 1;
+  }
+  buildings.push(pieces.length > 0 ? { h: dm(hM), pts: flat(pts), hulls: pieces.map((pc) => flat(pc)) } : { h: dm(hM), pts: flat(pts) });
+}
+buildings.sort((a, b) => a.pts[0]! - b.pts[0]! || a.pts[1]! - b.pts[1]!);
+
+// ---- walls and anchors ----
+const dIn = load('details');
+const walls: WallData[] = [];
+const lamps: Pt[] = [];
+for (const el of dIn.elements) {
+  if (el.type === 'node' && el.lat !== undefined && el.lon !== undefined) lamps.push(project(el.lat, el.lon));
+  else if (el.type === 'way' && el.geometry && /^(wall|retaining_wall|city_wall)$/.test(el.tags?.['barrier'] ?? '')) {
+    const line = simplify(toPts(el.geometry), 1.5);
+    for (let i = 0; i + 1 < line.length; i += 1) {
+      const a = line[i]!, b = line[i + 1]!;
+      // a wall across the route itself (a park gate or bollard line) would make it undrivable, so leave it out
+      if (ROUTE_SAMPLES.some((p) => segDist(p, a, b) < 2.5)) continue;
+      if (dist(a, b) >= 4 && distToRoad({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 }, 15) <= 15) walls.push({ pts: [dm(a.x), dm(a.z), dm(b.x), dm(b.z)], h: 25 });
+    }
+  }
+}
+// Every wall is a physics body that is always loaded (they are not streamed like buildings), so a city with hundreds of
+// garden walls slows every physics tick. Dense cities keep only the long walls near the route, the ones that matter.
+const MAX_WALLS = 12, MIN_WALL_M = 8, WALL_NEAR_ROUTE_M = 25;
+let wallsDropped = 0;
+if (cityOfRoute(id) !== 'accra' && walls.length > MAX_WALLS) {
+  const wallLen = (w: WallData): number => Math.hypot(w.pts[2] - w.pts[0], w.pts[3] - w.pts[1]) / 10;
+  const nearRoute = (w: WallData): boolean => {
+    const a = { x: w.pts[0] / 10, z: w.pts[1] / 10 }, b = { x: w.pts[2] / 10, z: w.pts[3] / 10 };
+    return ROUTE_SAMPLES.some((p) => segDist(p, a, b) < WALL_NEAR_ROUTE_M);
+  };
+  const kept = walls.filter((w) => wallLen(w) >= MIN_WALL_M && nearRoute(w)).sort((a, b) => wallLen(b) - wallLen(a)).slice(0, MAX_WALLS);
+  wallsDropped = walls.length - kept.length;
+  walls.length = 0;
+  walls.push(...kept);
+}
+walls.sort((a, b) => a.pts[0] - b.pts[0] || a.pts[1] - b.pts[1]);
+
+// Junctions: points where >= 3 road segment ends meet; anchors sit at nearby building corners (and lamps).
+const deg = new Map<string, { p: Pt; n: number }>();
+for (const line of roadLines) for (const [i, p] of [[0, line[0]!], [1, line[line.length - 1]!]] as [number, Pt][]) {
+  void i; const k = `${Math.round(p.x)},${Math.round(p.z)}`; const e = deg.get(k); if (e) e.n += 1; else deg.set(k, { p, n: 1 });
+}
+const junctions = [...deg.values()].filter((e) => e.n >= 3).map((e) => e.p).sort((a, b) => a.x - b.x || a.z - b.z);
+const cornerPool: Pt[] = [];
+for (const b of buildings) for (const hl of b.hulls ?? []) for (let i = 0; i < hl.length; i += 2) cornerPool.push({ x: hl[i]! / 10, z: hl[i + 1]! / 10 });
+const anchors: Pt[] = [];
+const spaced = (p: Pt): boolean => anchors.every((a) => dist(a, p) >= 20);
+for (const l of lamps) if (distToRoad(l, 12) <= 12 && spaced(l)) anchors.push(l);
+for (const j of junctions) {
+  const nearby = cornerPool.filter((c) => dist(c, j) <= 14).sort((a, b) => dist(a, j) - dist(b, j));
+  let taken = 0;
+  for (const c of nearby) if (taken < 2 && spaced(c)) { anchors.push(c); taken += 1; }
+}
+
+// ---- street lamps: scenery along the roads; the ones beside the route are also solid tentacle anchors ----
+const LAMP_ANCHOR_REACH = 25; // metres from the route
+const LAMP_ANCHOR_CAP = 60;
+const lxs = corridor.polyline.map((p) => p.x), lzs = corridor.polyline.map((p) => p.z);
+const lampSpots = placeLamps({ bounds: { minX: dm(Math.min(...lxs) - 250), maxX: dm(Math.max(...lxs) + 250), minZ: dm(Math.min(...lzs) - 250), maxZ: dm(Math.max(...lzs) + 250) }, roads, buildings }, corridor.polyline);
+const routeLine = corridor.polyline;
+const nearRoute = (p: Pt): boolean => routeLine.some((q, i) => i + 1 < routeLine.length && segDist(p, q, routeLine[i + 1]!) <= LAMP_ANCHOR_REACH);
+/** True where the route runs fairly straight past this point: a post at a bend is where a monster cuts the corner and gets wedged. */
+const onStraight = (p: Pt): boolean => {
+  let best = 0, bestD = Infinity;
+  routeLine.forEach((q, i) => { const d = dist(p, q); if (d < bestD) { bestD = d; best = i; } });
+  const a = routeLine[Math.max(0, best - 4)]!, m = routeLine[best]!, b = routeLine[Math.min(routeLine.length - 1, best + 4)]!;
+  const h1 = Math.atan2(m.x - a.x, m.z - a.z), h2 = Math.atan2(b.x - m.x, b.z - m.z);
+  let turn = Math.abs(h2 - h1);
+  if (turn > Math.PI) turn = 2 * Math.PI - turn;
+  return turn < 0.35;
+};
+let lampAnchors = 0;
+for (const l of lampSpots) {
+  const p = { x: l.x, z: l.z };
+  if (lampAnchors < LAMP_ANCHOR_CAP && nearRoute(p) && onStraight(p) && spaced(p)) { anchors.push(p); lampAnchors += 1; }
+}
+console.log(`  lamps ${lampSpots.length}, of them tentacle anchors ${lampAnchors}`);
+// Every anchor is a physics body that is always loaded, so a map with hundreds of them slows every tick (the main cost on
+// the dense city maps). Dense cities keep only the anchors within reach of the route.
+const ANCHOR_REACH_M = 45, MAX_ANCHORS = 160;
+let anchorsDropped = 0;
+if (cityOfRoute(id) !== 'accra' && anchors.length > MAX_ANCHORS) {
+  const near = anchors.filter((a) => ROUTE_SAMPLES.some((p) => dist(p, a) <= ANCHOR_REACH_M));
+  const step = Math.max(1, Math.ceil(near.length / MAX_ANCHORS));
+  const kept = near.filter((_, i) => i % step === 0);
+  anchorsDropped = anchors.length - kept.length;
+  anchors.length = 0;
+  anchors.push(...kept);
+}
+
+// ---- scenery and parked cars (cars become solid, like buildings; they are added last so no anchor sits on one) ----
+const lampBounds = { minX: dm(Math.min(...lxs) - 250), maxX: dm(Math.max(...lxs) + 250), minZ: dm(Math.min(...lzs) - 250), maxZ: dm(Math.max(...lzs) + 250) };
+const street = placeDecor({ bounds: lampBounds, roads, buildings }, lampSpots, corridor.polyline);
+let solidCars = 0;
+for (const car of street.cars) {
+  const corners = carCorners(car);
+  const pieces = engineAccepts(corners, 1.5) ? [corners] : []; // a car is one box; it is too small for the building collider rules
+  if (pieces.length === 0) continue;
+  buildings.push({ h: dm(1.5), pts: flat(corners), hulls: pieces.map((pc) => flat(pc)), car: car.color + 1 });
+  solidCars += 1;
+}
+console.log(`  scenery ${street.decor.length}, parked cars ${solidCars}`);
+
+// ---- checkpoints: every ~400 m, at each turn > 60 degrees, plus start and finish; cap 12 ----
+const poly = corridor.polyline;
+const cum: number[] = [0];
+for (let i = 1; i < poly.length; i += 1) cum.push(cum[i - 1]! + dist(poly[i - 1]!, poly[i]!));
+const total = cum[cum.length - 1]!;
+const at = (s: number): Pt => {
+  let i = 1; while (i < poly.length - 1 && cum[i]! < s) i += 1;
+  const a = poly[i - 1]!, b = poly[i]!, t = (s - cum[i - 1]!) / Math.max(1e-6, cum[i]! - cum[i - 1]!);
+  return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+};
+const turnAngle = (s: number): number => {
+  const a = at(Math.max(0, s - 30)), b = at(s), c = at(Math.min(total, s + 30));
+  const h1 = Math.atan2(b.x - a.x, b.z - a.z), h2 = Math.atan2(c.x - b.x, c.z - b.z);
+  let d = h2 - h1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+  return Math.abs(d);
+};
+const turns: { s: number; a: number }[] = [];
+for (let s = 40; s < total - 40; s += 10) {
+  const a = turnAngle(s);
+  if (a > (60 * Math.PI) / 180) {
+    const last = turns[turns.length - 1];
+    if (last && s - last.s < 50) { if (a > last.a) { last.s = s; last.a = a; } } else turns.push({ s, a });
+  }
+}
+let marks = [...turns.map((t) => t.s)];
+// Fill gaps larger than 450 m.
+marks.sort((a, b) => a - b);
+const withEnds = [0, ...marks, total];
+const filled: number[] = [];
+for (let i = 0; i + 1 < withEnds.length; i += 1) {
+  const a = withEnds[i]!, b = withEnds[i + 1]!;
+  if (a > 0) filled.push(a);
+  const n = Math.floor((b - a) / 450);
+  for (let k = 1; k <= n; k += 1) filled.push(a + ((b - a) * k) / (n + 1));
+}
+marks = filled.sort((a, b) => a - b);
+// Enforce a minimum spacing and the cap (keep the sharpest turns when over the cap).
+const MIN_GAP = 120, MAX_CP = 12;
+while (marks.length + 1 > MAX_CP || marks.some((m, i) => (i === 0 ? m : m - marks[i - 1]!) < MIN_GAP || total - m < MIN_GAP)) {
+  let worst = -1, ws = Infinity;
+  marks.forEach((m, i) => {
+    const gapPrev = i === 0 ? m : m - marks[i - 1]!;
+    const gapNext = i === marks.length - 1 ? total - m : marks[i + 1]! - m;
+    const score = Math.min(gapPrev, gapNext) + turnAngle(m) * 100;
+    if (score < ws) { ws = score; worst = i; }
+  });
+  if (worst < 0) break;
+  marks.splice(worst, 1);
+}
+const checkpoints = [...marks.map(at), poly[poly.length - 1]!].map((p) => ({ x: dm(p.x), z: dm(p.z) }));
+
+// ---- start pose ----
+const p0 = poly[0]!, p1 = at(Math.min(total, 25));
+const yaw = Math.atan2(p1.x - p0.x, p1.z - p0.z);
+
+// The route's centre line resampled to one point every 3 m, for the Lantern Head's guide line.
+const routeFlat: number[] = [];
+for (let s = 0; s < total; s += 3) {
+  const p = at(s);
+  routeFlat.push(dm(p.x), dm(p.z));
+}
+routeFlat.push(dm(poly[poly.length - 1]!.x), dm(poly[poly.length - 1]!.z));
+
+const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+const PAD = 250;
+const map: MapData = {
+  id,
+  version: 1,
+  name: def.name,
+  osmDate: bIn.osmDate,
+  bounds: { minX: dm(Math.min(...xs) - PAD), maxX: dm(Math.max(...xs) + PAD), minZ: dm(Math.min(...zs) - PAD), maxZ: dm(Math.max(...zs) + PAD) },
+  start: { x: dm(p0.x), z: dm(p0.z), yaw: Math.round(yaw * 1e6) },
+  checkpoints,
+  roads,
+  buildings,
+  walls,
+  anchors: anchors.map((a) => ({ x: dm(a.x), z: dm(a.z) })),
+  lengthM: Math.round(corridor.length),
+  route: routeFlat,
+  decor: street.decor.flatMap((d) => [dm(d.x), dm(d.z), d.kind, d.seed]),
+  lamps: lampSpots.flatMap((l) => [dm(l.x), dm(l.z), Math.round(l.dx * 100), Math.round(l.dz * 100)]),
+};
+
+const json = Buffer.from(JSON.stringify(map), 'utf8');
+const gz = gzipSync(json, { level: 9 });
+mkdirSync('bake/out', { recursive: true });
+const CITY_DIR = `public/cdn-assets/${cityOfRoute(id)}`;
+mkdirSync(CITY_DIR, { recursive: true });
+writeFileSync(`bake/out/${id}.map.json`, json);
+writeFileSync(`${CITY_DIR}/${id}.map.json.gz`, gz);
+console.log(`${id}: ${(json.length / 1024).toFixed(0)} KB json, ${(gz.length / 1024).toFixed(0)} KB gzip`);
+console.log(`  roads ${roads.length}, buildings ${buildings.length} (with colliders ${collidable} in ${totalPieces} pieces, clipped back from road lanes ${clipped}, too small/dropped ${dropped}, on a road and removed ${onRoad}, no valid collider ${rejected}, set back from every road and left without one ${pruned}), walls ${walls.length} (${wallsDropped} short or distant ones left out), anchors ${anchors.length} (${anchorsDropped} far from the route left out), lamps ${lamps.length}, junctions ${junctions.length}`);
+console.log(`  checkpoints ${checkpoints.length}, route ${Math.round(total)} m, OSM base ${bIn.osmDate}`);
+const BUDGET = 4 * 1024 * 1024;
+if (gz.length > BUDGET) { console.error(`BUDGET EXCEEDED: ${gz.length} > ${BUDGET}`); process.exit(1); }

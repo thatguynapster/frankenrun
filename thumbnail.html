@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Frankenrun thumbnail</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet" />
+    <style>
+      html, body { margin: 0; background: #111; color: #fff; font: 13px system-ui, sans-serif; }
+      #out { display: block; width: 768px; height: 768px; margin: 8px auto; }
+      #gl { position: fixed; left: -9999px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gl" width="1024" height="1024"></canvas>
+    <canvas id="out" width="1024" height="1024"></canvas>
+    <script type="module" src="/src/thumbnail.ts"></script>
+  </body>
+</html>
