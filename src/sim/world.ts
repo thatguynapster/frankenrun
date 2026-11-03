@@ -236,6 +236,7 @@ export function prepareMap(map: MapData): PreparedMap {
   const cached = prepared.get(map);
   if (cached) return cached;
   const cellIndex = buildCellIndex(map);
+  const onRoadFn = buildRoadIndex(map);
   const yaw = map.start.yaw / 1e6;
   const sx = m(map.start.x), sz = m(map.start.z);
   const fwdX = Math.sin(yaw), fwdZ = Math.cos(yaw);
@@ -245,7 +246,7 @@ export function prepareMap(map: MapData): PreparedMap {
     checkpoints: map.checkpoints.map((c) => ({ x: m(c.x), z: m(c.z) })),
     anchors: map.anchors.map((a) => ({ x: m(a.x), z: m(a.z) })),
     staticBodies: buildStaticBodies(map),
-    features: trackFeaturesFor(map),
+    features: trackFeaturesFor(map, onRoadFn),
     startYaw: yaw,
     startPose(slot: number): Vec2 {
       // Two columns, rows spaced back along the heading.
@@ -253,7 +254,7 @@ export function prepareMap(map: MapData): PreparedMap {
       const back = row * 5;
       return { x: sx - fwdX * back + fwdZ * side, z: sz - fwdZ * back - fwdX * side };
     },
-    onRoad: buildRoadIndex(map),
+    onRoad: onRoadFn,
     cellOf,
     cellBody(cell: number): DeterministicPhysicsBody3D | undefined {
       const list = cellIndex.get(cell);

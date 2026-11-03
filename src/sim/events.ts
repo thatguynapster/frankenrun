@@ -70,7 +70,26 @@ export const FLOOD_STEP_M = 7;
 export const FLOOD_LIFE_TICKS = 14 * 30;
 export const RAIN_PARTS = 3;
 export const RAIN_STEP_M = 13;
-/** Roamers bump a monster at most this often, and slow it for this long. */
-export const ROAMER_BUMP_COOLDOWN_TICKS = 40;
-export const ROAMER_BUMP_SHOVE = 0.12;
-export const ROAMER_SLOW_TICKS = 30;
+/** Wandering creatures (see features.ts): what each kind does to a monster. */
+/** Only creatures within this distance of a racing monster are looked at by the simulation. */
+export const ROAMER_ACTIVE_M = 40;
+
+/** Zombie: a solid body. Closer than this (monster centre to zombie centre) it blocks the way. */
+export const ZOMBIE_CONTACT_M = 2.1;
+/** Approach speed (m/s) from which hitting a zombie counts as a crash, and how long it slows the monster. */
+export const ZOMBIE_HIT_MS = 11;
+export const ZOMBIE_SLOW_TICKS = 25;
+
+/** Ghost: a chilling aura that slows, and a touch that spooks (steering is reversed for a moment). */
+export const GHOST_AURA_M = 6.5;
+export const GHOST_TOUCH_M = 2.4;
+export const SPOOK_TICKS = 36;
+export const CHILL_DRIVE_MUL = 0.62;
+
+/** Pumpkin walker: a springy bumper, and a stomp every few seconds that shoves and slows everyone close. */
+export const PUMPKIN_CONTACT_M = 2.5;
+export const STOMP_PERIOD_TICKS = 150;
+export const STOMP_WINDUP_TICKS = 36;
+export const STOMP_RADIUS_M = 7.5;
+export const STOMP_SHOVE = 0.26;
+export const STOMP_SLOW_TICKS = 30;

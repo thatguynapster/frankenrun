@@ -787,6 +787,12 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
             <small>{ITEM_BANNERS[me.itemKind]![1]}</small>
           </div>
         )}
+        {frame.phase === 'RACING' && me.finishTick < 0 && (me.fx & 16) !== 0 && (
+          <div className="surprise item5">
+            <strong>Spooked!</strong>
+            <small>Steering reversed</small>
+          </div>
+        )}
         {frame.phase === 'RACING' && me.finishTick < 0 && warning !== undefined && (
           <div key={warning.fireAt} className="surprise warn">
             <strong>{EVENT_BANNERS[warning.kind]![0]}</strong>

@@ -2,6 +2,7 @@
 // numbers out), so every client builds the same set; nothing here is random.
 
 import type { MapData } from './mapdata.js';
+import { STOMP_PERIOD_TICKS } from './events.js';
 
 export interface TrackFeature {
   /** Metres. */
@@ -11,6 +12,9 @@ export interface TrackFeature {
   readonly dx: number;
   readonly dz: number;
   readonly radius: number;
+  /** Roamers only: half-extent in metres of the area the creature wanders, along the road and across it. */
+  readonly reach?: number;
+  readonly across?: number;
 }
 
 export interface TrackFeatures {
@@ -20,7 +24,7 @@ export interface TrackFeatures {
   readonly crates: readonly TrackFeature[];
   /** Mystery boxes: drive through one for a random power-up (or a jinx); it comes back after a while. */
   readonly boxes: readonly TrackFeature[];
-  /** Wandering creatures that stroll back and forth across the road at these spots. */
+  /** Wandering creatures: each wanders at random inside a small area of road around its spot, anywhere on the map. */
   readonly roamers: readonly TrackFeature[];
 }
 
@@ -45,16 +49,19 @@ export const BOX_RADIUS = 2.4;
 export const BOX_RESPAWN_TICKS = 12 * 30;
 const BOX_FIRST_M = 115;
 const BOX_SPACING_M = 175;
+/** Boxes and creatures are scattered along every road of the map, not only the route; no two closer than this. */
+const BOX_APART_M = 55;
+const ROAMER_APART_M = 90;
 
-export const ROAMER_RADIUS = 1.5;
-/** How far a roamer strolls to each side of the route line. */
-export const ROAMER_SWING_M = 3.4;
+export const ROAMER_KINDS = 3;
 const ROAMER_FIRST_M = 210;
 const ROAMER_SPACING_M = 240;
+const ROAMER_REACH_M = 9;
+const ROAMER_ACROSS_M = 5;
 
 const NONE: TrackFeatures = { pads: [], oils: [], crates: [], boxes: [], roamers: [] };
 
-export function trackFeaturesFor(map: MapData): TrackFeatures {
+export function trackFeaturesFor(map: MapData, onRoad: (x: number, z: number) => boolean = () => true): TrackFeatures {
   const route = map.route;
   if (!route || route.length < 6) return NONE;
   const stops = [{ x: map.start.x / 10, z: map.start.z / 10 }, ...map.checkpoints.map((c) => ({ x: c.x / 10, z: c.z / 10 }))];
@@ -62,11 +69,7 @@ export function trackFeaturesFor(map: MapData): TrackFeatures {
   const pads: TrackFeature[] = [];
   const oils: TrackFeature[] = [];
   const crates: TrackFeature[] = [];
-  const boxes: TrackFeature[] = [];
-  const roamers: TrackFeature[] = [];
   let nextCrate = CRATE_FIRST_M;
-  let nextBox = BOX_FIRST_M;
-  let nextRoamer = ROAMER_FIRST_M;
   let walked = 0;
   let next = FIRST_M;
   let n = 0;
@@ -95,21 +98,52 @@ export function trackFeaturesFor(map: MapData): TrackFeatures {
       if (clear(x, z)) crates.push({ x, z, dx: (x1 - x0) / len, dz: (z1 - z0) / len, radius: 1 });
       nextCrate += CRATE_SPACING_M;
     }
-    while (walked + len >= nextBox) {
-      const t = (nextBox - walked) / len;
-      const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
-      if (clear(x, z)) boxes.push({ x, z, dx: (x1 - x0) / len, dz: (z1 - z0) / len, radius: BOX_RADIUS });
-      nextBox += BOX_SPACING_M;
+    walked += len;
+  }
+  // Mystery boxes and wandering creatures go along the route first (so it always has them), then along every other road.
+  const boxes: TrackFeature[] = [];
+  const roamers: TrackFeature[] = [];
+  const apart = (list: readonly TrackFeature[], x: number, z: number, d: number): boolean => list.every((f) => Math.hypot(f.x - x, f.z - z) >= d);
+  const addBox = (x: number, z: number, dx: number, dz: number, force: boolean): void => {
+    if (clear(x, z) && (force || (onRoad(x, z) && apart(boxes, x, z, BOX_APART_M)))) boxes.push({ x, z, dx, dz, radius: BOX_RADIUS });
+  };
+  const addRoamer = (x: number, z: number, dx: number, dz: number, halfRoad: number): void => {
+    if (!clear(x, z) || !apart(roamers, x, z, ROAMER_APART_M)) return;
+    // The wander area must lie on the road: try the full size, then smaller ones.
+    for (const scale of [1, 0.7, 0.5]) {
+      const reach = ROAMER_REACH_M * scale, across = Math.min(halfRoad * 0.85, ROAMER_ACROSS_M) * scale;
+      let fits = true;
+      for (const u of [-1, 0, 1]) for (const v of [-1, 0, 1]) fits = fits && onRoad(x + dx * u * reach - dz * v * across, z + dz * u * reach + dx * v * across);
+      if (fits && across >= 1.2) {
+        roamers.push({ x, z, dx, dz, radius: 1, reach, across });
+        return;
+      }
     }
-    while (walked + len >= nextRoamer) {
-      const t = (nextRoamer - walked) / len;
-      const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
-      if (clear(x, z)) roamers.push({ x, z, dx: (x1 - x0) / len, dz: (z1 - z0) / len, radius: ROAMER_RADIUS });
-      nextRoamer += ROAMER_SPACING_M;
+  };
+  walkLine(route, BOX_SPACING_M, BOX_FIRST_M, (x, z, dx, dz) => addBox(x, z, dx, dz, true));
+  walkLine(route, ROAMER_SPACING_M, ROAMER_FIRST_M, (x, z, dx, dz) => addRoamer(x, z, dx, dz, 3.4));
+  for (const road of map.roads) {
+    walkLine(road.pts, BOX_SPACING_M, BOX_FIRST_M / 2, (x, z, dx, dz) => addBox(x, z, dx, dz, false));
+    walkLine(road.pts, ROAMER_SPACING_M, ROAMER_FIRST_M / 2, (x, z, dx, dz) => addRoamer(x, z, dx, dz, road.hw / 10));
+  }
+  return { pads, oils, crates, boxes, roamers };
+}
+
+/** Calls `emit` at `first` metres along a polyline (flat decimetres) and then every `spacing` metres, with the heading there. */
+function walkLine(pts: readonly number[], spacing: number, first: number, emit: (x: number, z: number, dx: number, dz: number) => void): void {
+  let walked = 0;
+  let next = first;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const x0 = pts[i]! / 10, z0 = pts[i + 1]! / 10, x1 = pts[i + 2]! / 10, z1 = pts[i + 3]! / 10;
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len === 0) continue;
+    while (walked + len >= next) {
+      const t = (next - walked) / len;
+      emit(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, (x1 - x0) / len, (z1 - z0) / len);
+      next += spacing;
     }
     walked += len;
   }
-  return { pads, oils, crates, boxes, roamers };
 }
 
 export function featureAt(list: readonly TrackFeature[], x: number, z: number): TrackFeature | undefined {
@@ -117,17 +151,32 @@ export function featureAt(list: readonly TrackFeature[], x: number, z: number): 
   return undefined;
 }
 
-/** Where a roamer is at a given tick: it strolls across the road and back. `salt` makes each race different. */
-export function roamerAt(r: TrackFeature, index: number, salt: number, frame: number): { x: number; z: number; heading: number } {
-  const h = hashMix(salt, index);
-  const period = 150 + (h % 90); // 5 to 8 s for a full there-and-back
-  const phase = ((h >>> 8) % 1000) / 1000;
-  const angle = (frame / period + phase) * Math.PI * 2;
-  const lateral = Math.sin(angle) * ROAMER_SWING_M;
-  const x = r.x - r.dz * lateral, z = r.z + r.dx * lateral;
-  // walking sideways: the facing follows the sign of the lateral velocity
-  const sign = Math.cos(angle) >= 0 ? 1 : -1;
-  return { x, z, heading: Math.atan2(-r.dz * sign, r.dx * sign) };
+/**
+ * Where a roamer is at a given tick and which way it faces: it wanders at random (two slow drifts added together along
+ * and across the road) inside its area, so it never walks a fixed line. `salt` makes each race different.
+ */
+export function roamerAt(r: TrackFeature, index: number, salt: number, frame: number): { x: number; z: number; heading: number; speed: number } {
+  const h1 = hashMix(salt, index * 3 + 1), h2 = hashMix(salt, index * 3 + 2);
+  const f = (h: number, shift: number, lo: number, span: number): number => lo + (((h >>> shift) & 255) / 255) * span;
+  const w1 = f(h1, 0, 0.12, 0.13), w2 = f(h1, 8, 0.25, 0.15), w3 = f(h2, 0, 0.1, 0.13), w4 = f(h2, 8, 0.27, 0.15);
+  const p1 = f(h1, 16, 0, 6.28), p2 = f(h1, 24, 0, 6.28), p3 = f(h2, 16, 0, 6.28), p4 = f(h2, 24, 0, 6.28);
+  const t = frame / 30;
+  const reach = r.reach ?? 0, across = r.across ?? 0;
+  const u = reach * (0.6 * Math.sin(w1 * t + p1) + 0.4 * Math.sin(w2 * t + p2));
+  const v = across * (0.6 * Math.sin(w3 * t + p3) + 0.4 * Math.sin(w4 * t + p4));
+  const du = reach * (0.6 * w1 * Math.cos(w1 * t + p1) + 0.4 * w2 * Math.cos(w2 * t + p2));
+  const dv = across * (0.6 * w3 * Math.cos(w3 * t + p3) + 0.4 * w4 * Math.cos(w4 * t + p4));
+  const vx = r.dx * du - r.dz * dv, vz = r.dz * du + r.dx * dv;
+  return { x: r.x + r.dx * u - r.dz * v, z: r.z + r.dz * u + r.dx * v, heading: Math.atan2(vx, vz), speed: Math.hypot(vx, vz) };
+}
+
+/** Which creature a roamer is: 0 zombie, 1 ghost, 2 pumpkin walker. */
+export const roamerKind = (index: number): number => hashMix(0x5eed, index) % ROAMER_KINDS;
+
+/** Ticks until this roamer's next stomp (0 on the tick it happens); only pumpkin walkers stomp. */
+export function stompIn(index: number, salt: number, frame: number): number {
+  const off = hashMix(salt, index + 777) % STOMP_PERIOD_TICKS;
+  return (STOMP_PERIOD_TICKS - ((frame + off) % STOMP_PERIOD_TICKS)) % STOMP_PERIOD_TICKS;
 }
 
 function hashMix(a: number, b: number): number {

@@ -2,7 +2,7 @@
 // input and never reads Math.random, Date, performance.now, the DOM or the network.
 // Time is counted in ticks (TICK_RATE ticks = 1 s).
 
-import { BOX_RADIUS, BOX_RESPAWN_TICKS, CRATE_PERIOD_TICKS, featureAt, OIL_GRIP_MUL, PAD_ACCEL, ROAMER_RADIUS, roamerAt, routeAhead } from './features.js';
+import { BOX_RADIUS, BOX_RESPAWN_TICKS, CRATE_PERIOD_TICKS, featureAt, OIL_GRIP_MUL, PAD_ACCEL, roamerAt, roamerKind, routeAhead, stompIn } from './features.js';
 import {
   EVENT_AHEAD_M,
   EVENT_FIRST_TICKS,
@@ -26,9 +26,18 @@ import {
   LIGHTNING_SLOW_TICKS,
   RAIN_PARTS,
   RAIN_STEP_M,
-  ROAMER_BUMP_COOLDOWN_TICKS,
-  ROAMER_BUMP_SHOVE,
-  ROAMER_SLOW_TICKS,
+  CHILL_DRIVE_MUL,
+  GHOST_AURA_M,
+  GHOST_TOUCH_M,
+  PUMPKIN_CONTACT_M,
+  ROAMER_ACTIVE_M,
+  SPOOK_TICKS,
+  STOMP_RADIUS_M,
+  STOMP_SHOVE,
+  STOMP_SLOW_TICKS,
+  ZOMBIE_CONTACT_M,
+  ZOMBIE_HIT_MS,
+  ZOMBIE_SLOW_TICKS,
   rollItem,
   SHIELD_TICKS,
   SLIME_TICKS,
@@ -266,8 +275,9 @@ export interface PlayerState {
   readonly shieldUntil: number;
   readonly slimeUntil: number;
   readonly slowUntil: number;
-  /** A wandering creature cannot bump this monster again before this tick. */
-  readonly bumpUntil: number;
+  /** A ghost's chill (slower) and a ghost's touch (steering reversed), each active until the given tick. */
+  readonly chillUntil: number;
+  readonly spookUntil: number;
   /** The last mystery box prize (ITEM_*) and the tick it was opened. */
   readonly itemKind: number;
   readonly itemTick: number;
@@ -395,7 +405,7 @@ export interface PlayerView {
   /** The last mystery box prize (ITEM_*) and when it was opened. */
   readonly itemKind: number;
   readonly itemTick: number;
-  /** Active effects: 1 surge, 2 shield, 4 slime trail, 8 slowed. */
+  /** Active effects: 1 surge, 2 shield, 4 slime trail, 8 slowed, 16 spooked (steering reversed), 32 chilled. */
   readonly fx: number;
 }
 
@@ -578,7 +588,8 @@ function newPlayer(slot: number): PlayerState {
     shieldUntil: 0,
     slimeUntil: 0,
     slowUntil: 0,
-    bumpUntil: 0,
+    chillUntil: 0,
+    spookUntil: 0,
     itemKind: 0,
     itemTick: -1000,
   };
@@ -916,6 +927,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   let boxReady = state.boxReady;
   /** Grabs that ran out of time this tick: the grabber steals a part (resolved with the other steals after the physics step). */
   const grabSteals: { attacker: number; victim: number }[] = [];
+  /** Monsters that crashed into a zombie this tick (resolved with the other hits after the physics step). */
+  const roamerHits = new Map<number, { x: number; z: number; weight: number }>();
   /** Loose parts a claw reached for this tick: slot of the grabber -> pickup id. */
   const clawPickups = new Map<number, number>();
   let phase = state.phase;
@@ -1160,18 +1173,21 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const airborne = hopAir > 0;
       const oil = featureAt(prep.features.oils, body.x, body.z) !== undefined;
       const gripMul = Math.min(slickGripMul(state.slicks, body.x, body.z, p.slot), oil ? OIL_GRIP_MUL : 1);
-      const slowUntil = p.slowUntil;
-      let bumpUntil = p.bumpUntil;
-      let bumpedSlow = slowUntil;
-      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul) * (frame < slowUntil ? SLOW_DRIVE_MUL : 1));
+      let slowTo = p.slowUntil;
+      let chillTo = p.chillUntil;
+      let spookTo = p.spookUntil;
+      const driveMul = frame < p.slowUntil ? SLOW_DRIVE_MUL : frame < p.chillUntil ? CHILL_DRIVE_MUL : 1;
+      // A ghost's touch reverses the steering for a moment.
+      const steerIn = frame < p.spookUntil ? -input.steer : input.steer;
+      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul) * driveMul);
       // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
       // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
       const speedMs = Math.hypot(body.vx, body.vz) * TICK_RATE;
-      const pivoting = live && Math.abs(input.steer) >= PIVOT_MIN_STEER && speedMs < PIVOT_SPEED;
+      const pivoting = live && Math.abs(steerIn) >= PIVOT_MIN_STEER && speedMs < PIVOT_SPEED;
       const result = stepDeterministicVehicle3D(vehicle, {
         // No reverse: a negative throttle (S / down) is a brake instead.
         throttle: live && !pivoting ? clampInt((input.throttle / 10) * (hopCharge > 0 && hop !== undefined ? hop.chargeThrottle : 1), 0, 10) : 0,
-        steer: live && !airborne ? clampInt((input.steer / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
+        steer: live && !airborne ? clampInt((steerIn / 10) * steerScale(body.vx, body.vz), -10, 10) : 0,
         brake: live ? (input.throttle < 0 ? 10 : 0) : 10,
       }, world);
       for (const imp of result.impulses) {
@@ -1195,22 +1211,44 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         if (frame < p.slimeUntil && frame % 6 === 0) {
           newSlicks.push({ x: body.x - (hx / hl) * 2.4, z: body.z - (hz / hl) * 2.4, expires: frame + HEADS.slime.slickLifeTicks, owner: p.slot });
         }
-        if (frame >= bumpUntil) {
-          prep.features.roamers.some((r, ri) => {
-            const at = roamerAt(r, ri, raceStart, frame);
-            const dx = body.x - at.x, dz = body.z - at.z, d = Math.hypot(dx, dz);
-            if (d > ROAMER_RADIUS + 1.3) return false;
-            const nx = d > 0.01 ? dx / d : 0, nz = d > 0.01 ? dz / d : 1;
-            impulses.push({ bodyId: carId(p.slot), impulse: { x: nx * mass * ROAMER_BUMP_SHOVE, y: 0, z: nz * mass * ROAMER_BUMP_SHOVE }, worldPoint: { x: body.x, y: body.y, z: body.z } });
-            bumpUntil = frame + ROAMER_BUMP_COOLDOWN_TICKS;
-            if (frame >= p.shieldUntil) bumpedSlow = Math.max(bumpedSlow, frame + ROAMER_SLOW_TICKS);
-            return true;
-          });
-        }
+        // Wandering creatures near this monster (the simulation only looks at those within reach of a racer).
+        const push = (nx: number, nz: number, dv: number): void => {
+          impulses.push({ bodyId: carId(p.slot), impulse: { x: nx * mass * dv, y: 0, z: nz * mass * dv }, worldPoint: { x: body.x, y: body.y, z: body.z } });
+        };
+        prep.features.roamers.forEach((r, ri) => {
+          const range = ROAMER_ACTIVE_M + (r.reach ?? 0);
+          if (Math.abs(r.x - body.x) > range || Math.abs(r.z - body.z) > range) return;
+          const at = roamerAt(r, ri, raceStart, frame);
+          const dx = body.x - at.x, dz = body.z - at.z, d = Math.hypot(dx, dz);
+          const kind = roamerKind(ri);
+          const nx = d > 0.01 ? dx / d : 0, nz = d > 0.01 ? dz / d : 1;
+          const closing = -(body.vx * nx + body.vz * nz); // metres per tick, positive when driving into it
+          if (kind === 0 || kind === 2) {
+            // Zombies are solid and heavy; pumpkin walkers are springy bumpers. Both stop a monster driving through them.
+            const contact = kind === 0 ? ZOMBIE_CONTACT_M : PUMPKIN_CONTACT_M;
+            if (d < contact) {
+              const rebound = closing > 0 ? closing * (kind === 0 ? 1.15 : 2.2) : 0;
+              push(nx, nz, rebound + Math.min(0.1, (contact - d) * 0.12));
+              if (kind === 0 && closing * TICK_RATE >= ZOMBIE_HIT_MS) {
+                roamerHits.set(p.slot, { x: body.x, z: body.z, weight: 1 });
+                if (frame >= p.shieldUntil) slowTo = Math.max(slowTo, frame + ZOMBIE_SLOW_TICKS);
+              }
+            }
+          } else if (kind === 1) {
+            // Ghosts drift through everything: a chilling aura slows, a touch reverses the steering.
+            if (d < GHOST_AURA_M) chillTo = Math.max(chillTo, frame + 6);
+            if (d < GHOST_TOUCH_M && frame >= p.shieldUntil) spookTo = Math.max(spookTo, frame + SPOOK_TICKS);
+          }
+          // Pumpkin walkers stomp now and then: everyone close is shoved away and slowed.
+          if (kind === 2 && d < STOMP_RADIUS_M && stompIn(ri, raceStart, frame) === 0) {
+            push(nx, nz, STOMP_SHOVE);
+            if (frame >= p.shieldUntil) slowTo = Math.max(slowTo, frame + STOMP_SLOW_TICKS);
+          }
+        });
       }
       if (pivoting) {
         const fade = Math.min(1, (1 - speedMs / PIVOT_SPEED) * 2.5); // full torque until 60% of the pivot speed
-        torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: PIVOT_SPEED_SIGN * (input.steer / 100) * fade * PIVOT_TORQUE * MASS_UNIT, z: 0 } });
+        torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: PIVOT_SPEED_SIGN * (steerIn / 100) * fade * PIVOT_TORQUE * MASS_UNIT, z: 0 } });
       }
       if (spinLeft > 0) {
         torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: ARMS.tentacles.missSpinTorque * MASS_UNIT * 0.001, z: 0 } });
@@ -1224,8 +1262,9 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         hopCharge,
         hopReadyAt,
         hopAir,
-        slowUntil: bumpedSlow,
-        bumpUntil,
+        slowUntil: slowTo,
+        chillUntil: chillTo,
+        spookUntil: spookTo,
         armsCooldown,
         headCooldown,
         trailLeft,
@@ -1405,6 +1444,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         if (car >= 0 && (preSpeed.get(car) ?? 0) >= WALL_HIT_MIN_SPEED_MS && closing >= WALL_HIT_MIN_CLOSING_MS) hitAt.set(car, { ...point, weight: 1 });
       }
     }
+    for (const [slot, hit] of roamerHits) if (!hitAt.has(slot)) hitAt.set(slot, hit);
     const changed = new Set<number>();
 
     // --- Crab Claws steals: the victim loses a random part; the attacker takes it into the matching empty slot, or it drops ---
@@ -1547,12 +1587,18 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     // --- mystery boxes: driving through one opens it ---
     if (prep.features.boxes.length > 0) {
       let opened: number[] | null = null;
+      // Boxes are all over the map: only racers close to one are looked at.
+      const racerAt: { slot: number; x: number; z: number }[] = [];
+      for (const q of players) {
+        if (!q.inRace || q.finishTick >= 0) continue;
+        const qb = deterministicPhysicsBodyById3D(world, carId(q.slot));
+        if (qb !== undefined) racerAt.push({ slot: q.slot, x: qb.x, z: qb.z });
+      }
       prep.features.boxes.forEach((box, i) => {
         if (frame < (boxReady[i] ?? 0)) return;
-        for (const p of players) {
-          if (!p.inRace || p.finishTick >= 0) continue;
-          const b = deterministicPhysicsBodyById3D(world, carId(p.slot));
-          if (b === undefined || Math.hypot(b.x - box.x, b.z - box.z) > BOX_RADIUS) continue;
+        for (const near of racerAt) {
+          if (Math.abs(near.x - box.x) > BOX_RADIUS || Math.abs(near.z - box.z) > BOX_RADIUS || Math.hypot(near.x - box.x, near.z - box.z) > BOX_RADIUS) continue;
+          const p = players[near.slot]!;
           const racers = players.filter((q) => q.inRace && q.finishTick < 0);
           const ahead = racers.filter((q) => q.slot !== p.slot && isAhead(world, prep, q, p)).length;
           const behind = racers.length > 1 ? ahead / (racers.length - 1) : 0;
@@ -1679,7 +1725,7 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       rematch: p.rematch,
       itemKind: p.itemKind,
       itemTick: p.itemTick,
-      fx: (state.frame < p.boostUntil ? 1 : 0) | (state.frame < p.shieldUntil ? 2 : 0) | (state.frame < p.slimeUntil ? 4 : 0) | (state.frame < p.slowUntil ? 8 : 0),
+      fx: (state.frame < p.boostUntil ? 1 : 0) | (state.frame < p.shieldUntil ? 2 : 0) | (state.frame < p.slimeUntil ? 4 : 0) | (state.frame < p.slowUntil ? 8 : 0) | (state.frame < p.spookUntil ? 16 : 0) | (state.frame < p.chillUntil ? 32 : 0),
     };
   });
   return {

@@ -2,8 +2,8 @@
 // and the glow of mystery box effects on a monster. Reads a projection and the map's features; never writes back.
 
 import * as THREE from 'three';
-import { roamerAt } from '../sim/features.js';
-import { EVENT_FLOOD, EVENT_LIGHTNING, EVENT_RAIN, EVENT_TELEGRAPH_TICKS, LIGHTNING_RADIUS } from '../sim/events.js';
+import { roamerAt, roamerKind, stompIn } from '../sim/features.js';
+import { EVENT_FLOOD, EVENT_LIGHTNING, EVENT_RAIN, EVENT_TELEGRAPH_TICKS, LIGHTNING_RADIUS, STOMP_WINDUP_TICKS } from '../sim/events.js';
 import type { GameProjection } from '../sim/game.js';
 import type { PreparedMap } from '../sim/world.js';
 import type { Particles } from './Particles.js';
@@ -19,8 +19,10 @@ export class RaceFun {
   readonly group = new THREE.Group();
   private readonly boxBeamMat = new THREE.MeshBasicMaterial({ color: 0xffa13a, transparent: true, opacity: 0.16, depthWrite: false });
   private readonly boxBeamGeo = new THREE.CylinderGeometry(0.45, 0.45, 12, 8, 1, true);
-  private boxes: { group: THREE.Group; crate: Crate; open: boolean }[] = [];
-  private roamers: Creature[] = [];
+  /** Boxes and creatures exist only while the camera is near them (the map has hundreds); keyed by their index in the map's lists. */
+  private boxes = new Map<number, { group: THREE.Group; crate: Crate; open: boolean }>();
+  private roamers = new Map<number, { creature: Creature; phase: number; lastStomp: number }>();
+  private preparedFor: PreparedMap | undefined;
   private readonly ringGeo = new THREE.RingGeometry(0.76, 1, 40).rotateX(-Math.PI / 2);
   private readonly discGeo = new THREE.CircleGeometry(1, 32).rotateX(-Math.PI / 2);
   private warnings: { ring: THREE.Mesh; disc: THREE.Mesh; bolt: THREE.Mesh }[] = [];
@@ -68,16 +70,33 @@ export class RaceFun {
     const time = frame.frame / 30;
     const cam = camera.position;
 
-    // --- mystery boxes ---
-    const boxes = prep.features.boxes;
-    while (this.boxes.length < boxes.length) this.boxes.push(this.makeBox());
-    this.boxes.forEach((entry, i) => {
-      const spot = boxes[i];
-      if (spot === undefined || Math.hypot(spot.x - cam.x, spot.z - cam.z) > BOX_DRAW_M) {
-        entry.group.visible = false;
+    // A different map has different spots: forget everything that was built for the last one.
+    if (this.preparedFor !== prep) {
+      for (const e of this.boxes.values()) this.group.remove(e.group);
+      for (const e of this.roamers.values()) this.group.remove(e.creature.root);
+      this.boxes.clear();
+      this.roamers.clear();
+      this.preparedFor = prep;
+    }
+
+    // --- mystery boxes, all over the map: one is built when the camera comes near it, and dropped once it is far away ---
+    prep.features.boxes.forEach((spot, i) => {
+      const d = Math.hypot(spot.x - cam.x, spot.z - cam.z);
+      let entry = this.boxes.get(i);
+      if (d > BOX_DRAW_M) {
+        if (entry !== undefined && d > BOX_DRAW_M * 1.3) {
+          this.group.remove(entry.group);
+          this.boxes.delete(i);
+        }
+        if (entry !== undefined) entry.group.visible = false;
         return;
       }
       const ready = frame.frame >= (frame.boxReady[i] ?? 0);
+      if (entry === undefined) {
+        if (!ready) return;
+        entry = this.makeBox();
+        this.boxes.set(i, entry);
+      }
       if (entry.open && !ready) particles.burst(spot.x, 1.2, spot.z, { count: 22, color: 0xffa13a, speed: 6, up: 5, life: 0.8, gravity: 0.5 });
       entry.open = ready;
       entry.group.visible = ready;
@@ -88,29 +107,42 @@ export class RaceFun {
       entry.crate.animate(time + i);
     });
 
-    // --- wandering creatures ---
-    const roamers = prep.features.roamers;
-    while (this.roamers.length < roamers.length) {
-      const creature = createCreature(this.roamers.length);
-      this.group.add(creature.root);
-      this.roamers.push(creature);
-    }
+    // --- wandering creatures, all over the map, built only while the camera is near ---
     const walking = frame.phase === 'RACING';
-    this.roamers.forEach((entry, i) => {
-      const spot = roamers[i];
-      if (spot === undefined || !walking) {
-        entry.root.visible = false;
+    prep.features.roamers.forEach((spot, i) => {
+      let entry = this.roamers.get(i);
+      if (!walking) {
+        if (entry !== undefined) entry.creature.root.visible = false;
         return;
       }
       const at = roamerAt(spot, i, frame.raceStart, frame.frame);
-      if (Math.hypot(at.x - cam.x, at.z - cam.z) > ROAMER_DRAW_M) {
-        entry.root.visible = false;
+      const d = Math.hypot(at.x - cam.x, at.z - cam.z);
+      if (d > ROAMER_DRAW_M) {
+        if (entry !== undefined && d > ROAMER_DRAW_M * 1.3) {
+          this.group.remove(entry.creature.root);
+          this.roamers.delete(i);
+        } else if (entry !== undefined) entry.creature.root.visible = false;
         return;
       }
-      entry.root.visible = true;
-      entry.root.position.set(at.x, 0, at.z);
-      entry.root.rotation.y = at.heading;
-      entry.animate(time, time * 7 + i * 2.3);
+      if (entry === undefined) {
+        const creature = createCreature(roamerKind(i));
+        this.group.add(creature.root);
+        entry = { creature, phase: i * 2.3, lastStomp: 0 };
+        this.roamers.set(i, entry);
+      }
+      entry.creature.root.visible = true;
+      entry.creature.root.position.set(at.x, 0, at.z);
+      entry.creature.root.rotation.y = at.heading;
+      entry.phase += dt * (1.5 + at.speed * 2.4);
+      // a pumpkin walker winds up before it stomps, and the stomp throws up a ring of sparks
+      let wind = 0;
+      if (roamerKind(i) === 2) {
+        const left = stompIn(i, frame.raceStart, frame.frame);
+        wind = left > 0 && left <= STOMP_WINDUP_TICKS ? 1 - left / STOMP_WINDUP_TICKS : 0;
+        if (left > entry.lastStomp + 20) particles.burst(at.x, 0.4, at.z, { count: 30, color: 0xffa21f, speed: 10, up: 2, life: 0.6, gravity: 0.5 });
+        entry.lastStomp = left;
+      }
+      entry.creature.animate(time, entry.phase, wind);
     });
 
     // --- street event warnings and strikes ---
@@ -171,6 +203,8 @@ export class RaceFun {
       if (p.present && dt > 0) {
         if ((p.fx & 1) !== 0) particles.burst(p.x, p.y + 0.3, p.z, { count: 2, color: 0xffa23b, speed: 2.5, up: 1.5, life: 0.35, gravity: 0.1 });
         if ((p.fx & 8) !== 0) particles.burst(p.x, p.y + 1.2, p.z, { count: 1, color: 0x8a8aa0, speed: 1.5, up: 2, life: 0.5, gravity: 0 });
+        if ((p.fx & 16) !== 0) particles.burst(p.x, p.y + 2.2, p.z, { count: 1, color: 0xb27dff, speed: 1.5, up: 2.5, life: 0.6, gravity: 0 });
+        if ((p.fx & 32) !== 0) particles.burst(p.x, p.y + 1.5, p.z, { count: 1, color: 0x9fe0ff, speed: 1.2, up: 1.5, life: 0.5, gravity: 0 });
       }
       const seen = this.lastItemTick[i];
       if (seen !== undefined && p.itemTick !== seen && p.itemKind > 0 && frame.frame - p.itemTick < 6) {

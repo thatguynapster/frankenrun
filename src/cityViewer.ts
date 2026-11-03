@@ -5,6 +5,7 @@ import type { MapData } from './sim/mapdata.js';
 import { buildCity, cullCity } from './render/city.js';
 import { THEMES, routeInfo } from './routes.js';
 import { RaceFun } from './render/raceFun.js';
+import { createCreature, createCrate, type Creature, type Crate } from './render/creatures.js';
 import { Particles } from './render/Particles.js';
 import { registerMap, getPreparedMap } from './sim/world.js';
 import type { GameProjection } from './sim/game.js';
@@ -28,6 +29,7 @@ const particles = new Particles();
 scene.add(fun.group, particles.points);
 scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x302040, 1.8), new THREE.DirectionalLight(0xffe2c0, 1.2));
 /** A fake race frame for looking at the race surprises: tick, and a street event of the given kind 1.5 s away. */
+let showcase: { item: Creature | Crate; creature: boolean } | undefined;
 let funFrame: Partial<GameProjection> | undefined;
 
 async function load(id: string): Promise<void> {
@@ -86,6 +88,16 @@ const view = {
     camera.lookAt(x + Math.sin(a) * 12, 3, z + Math.cos(a) * 12);
   },
   triangles,
+  /** Stands one creature (kind 0 zombie, 1 ghost, 2 pumpkin) or, with kind -1, the mystery crate at (x, z) for a close look. */
+  show(kind: number, x: number, z: number, heading = 0): void {
+    if (showcase !== undefined) scene.remove(showcase.item.root);
+    const creature = kind >= 0;
+    const item = creature ? createCreature(kind) : createCrate();
+    item.root.position.set(x, 0, z);
+    item.root.rotation.y = heading;
+    scene.add(item.root);
+    showcase = { item, creature };
+  },
   /** Shows the mystery boxes, creatures and an event warning on the loaded route. event 0 = none, 1 lightning, 2 flood, 3 rain. */
   fun(tick: number, event = 0, ex = 0, ez = 0): void {
     const events = event === 0 ? [] : [{ kind: event, x: ex, z: ez, dx: 1, dz: 0, fireAt: tick + 40 }];
@@ -145,6 +157,11 @@ const view = {
 function frame(): void {
   cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
   for (const m of cityMeshes) if (m.userData["off"] === true) m.visible = false;
+  if (showcase !== undefined) {
+    const t = performance.now() / 1000;
+    if (showcase.creature) (showcase.item as Creature).animate(t, t * 7, 0.5 + 0.5 * Math.sin(t * 2));
+    else (showcase.item as Crate).animate(t);
+  }
   if (prep !== undefined && funFrame !== undefined) {
     fun.update(funFrame as GameProjection, prep, camera, 1 / 60, particles);
     particles.update(1 / 60);
