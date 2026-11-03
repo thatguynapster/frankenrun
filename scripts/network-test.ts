@@ -28,9 +28,9 @@ const driver = (slot: number, tick: number): GameInput => ({
 const roomConfig = {
   playerCount: MAX_PLAYERS, // a real room's simulation slots equal its player limit; two clients occupy slots 0 and 1
   seed: 1,
-  hardToleranceTicks: 12,
+  hardToleranceTicks: Number(process.env['HARD'] ?? 12),
   tickRateHz: 30,
-  redundancyWindowTicks: 8,
+  redundancyWindowTicks: Number(process.env['REDUN'] ?? 8),
   runtimeIdentity,
   sessionConfigBytes: session.bytes,
   sessionConfigDigest: session.digest,
@@ -44,6 +44,7 @@ const clientOptions = () => ({
   encodeInput,
   decodeInput,
   maxPredictionTicks: Number(process.env['MAXPRED'] ?? 8),
+  ...(process.env['DELAY_MAX'] ? { inputDelay: { minTicks: Number(process.env['DELAY_MIN'] ?? 1), maxTicks: Number(process.env['DELAY_MAX']) } } : {}),
 });
 const steps = Number(process.env.STEPS ?? 600);
 const link = { latencyTicks: Number(process.env['LAT'] ?? 3), jitterTicks: Number(process.env['JIT'] ?? 2), lossRate: Number(process.env['LOSS'] ?? 0.02) };

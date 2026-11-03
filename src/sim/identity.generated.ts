@@ -7,7 +7,7 @@ export const runtimeIdentity: Readonly<KinetixRuntimeIdentity> = {
   "inputSchemaId": "6f57a724d363074a4dbe27f47d0252dad532661c6fe9508e14e4a5fedafcdc0f",
   "stateSchemaId": "c2c051258808ab62499166567147e9f6b75ac2995a659e4f67195b0aec82258e",
   "deterministicVersion": "frankenrun@1+syncplay5.28.0-beta.5",
-  "engineIdentityHash": "c179eaa8693760fb3cc281cdd1aa2a3327181de992edf6543c27ab9a50347eb0"
+  "engineIdentityHash": "5bdb09adcf83856959f18962f7be0b9d52f0682835b79ad124aefee0fdfe8a99"
 };
 
 /** Digests of the baked maps pinned into the identity (see scripts/gen-identity.ts). */

@@ -8,7 +8,8 @@ import {
 } from '@series-inc/rundot-syncplay/browser';
 import { DEFAULT_INPUT, type GameInput, type GameProjection, type PlayerView } from '../sim/game.js';
 import { decodeInput, encodeInput } from '../sim/input-codec.js';
-import { createGameRuntime, DEFAULT_MAP, makeSessionConfig, MAX_PLAYERS, runtimeIdentity } from '../sim/runtime.js';
+import { createGameRuntime, DEFAULT_MAP, makeSessionConfig, mapOfSessionConfig, MAX_PLAYERS, runtimeIdentity } from '../sim/runtime.js';
+import { ensureMap } from './mapLoader.js';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
@@ -31,6 +32,9 @@ function lerpPlayer(a: PlayerView, b: PlayerView, t: number): PlayerView {
 /** Netcode prediction budget in ticks. See the note in createRunner. */
 export const MAX_PREDICTION_TICKS = 12;
 
+/** Own-input delay in ticks, adapting to the measured round trip. */
+export const INPUT_DELAY = { minTicks: 1, maxTicks: 8 } as const;
+
 export type FrankenRunner = SyncplayRunner<GameInput, GameProjection, never>;
 
 export function createRunner(): FrankenRunner {
@@ -45,6 +49,12 @@ export function createRunner(): FrankenRunner {
     // work of a rollback (depth x tick cost), so it is kept modest: on a bad link the netcode adds input
     // delay instead of re-simulating ever deeper.
     maxPredictionTicks: MAX_PREDICTION_TICKS,
+    // Own inputs are sent a few ticks ahead, more on a slower link, so they reach the host before its deadline.
+    inputDelay: INPUT_DELAY,
+    // A player downloads only the route the room is on (and the next one when the host changes it), never every route.
+    prepareNetworkRuntime: async (descriptor) => {
+      await ensureMap(mapOfSessionConfig(descriptor.sessionConfigBytes));
+    },
     presentation: {
       project: (projection) => projection,
       interpolate: (previous, current, alpha) => {

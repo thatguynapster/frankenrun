@@ -2,7 +2,41 @@
 // input and never reads Math.random, Date, performance.now, the DOM or the network.
 // Time is counted in ticks (TICK_RATE ticks = 1 s).
 
-import { CRATE_PERIOD_TICKS, featureAt, OIL_GRIP_MUL, PAD_ACCEL } from './features.js';
+import { BOX_RADIUS, BOX_RESPAWN_TICKS, CRATE_PERIOD_TICKS, featureAt, OIL_GRIP_MUL, PAD_ACCEL, ROAMER_RADIUS, roamerAt, routeAhead } from './features.js';
+import {
+  EVENT_AHEAD_M,
+  EVENT_FIRST_TICKS,
+  EVENT_FLOOD,
+  EVENT_LIGHTNING,
+  EVENT_LINGER_TICKS,
+  EVENT_PERIOD_TICKS,
+  EVENT_RAIN,
+  EVENT_TELEGRAPH_TICKS,
+  FLOOD_LIFE_TICKS,
+  FLOOD_PUDDLES,
+  FLOOD_STEP_M,
+  ITEM_JINX,
+  ITEM_MEND,
+  ITEM_SHIELD,
+  ITEM_SLIME,
+  ITEM_SURGE,
+  JINX_TICKS,
+  LIGHTNING_RADIUS,
+  LIGHTNING_SHOVE,
+  LIGHTNING_SLOW_TICKS,
+  RAIN_PARTS,
+  RAIN_STEP_M,
+  ROAMER_BUMP_COOLDOWN_TICKS,
+  ROAMER_BUMP_SHOVE,
+  ROAMER_SLOW_TICKS,
+  rollItem,
+  SHIELD_TICKS,
+  SLIME_TICKS,
+  SLOW_DRIVE_MUL,
+  SURGE_ACCEL,
+  SURGE_TICKS,
+  type StreetEvent,
+} from './events.js';
 import {
   applyDeterministicForces3D,
   applyDeterministicImpulses3D,
@@ -227,6 +261,16 @@ export interface PlayerState {
   readonly lastSeen: number;
   /** True for the monsters in the current race; players who are not (late joiners, or still on the results) only watch. */
   readonly inRace: boolean;
+  /** Mystery box effects, each active until the given tick. */
+  readonly boostUntil: number;
+  readonly shieldUntil: number;
+  readonly slimeUntil: number;
+  readonly slowUntil: number;
+  /** A wandering creature cannot bump this monster again before this tick. */
+  readonly bumpUntil: number;
+  /** The last mystery box prize (ITEM_*) and the tick it was opened. */
+  readonly itemKind: number;
+  readonly itemTick: number;
 }
 
 export type SlotKey = 'legs' | 'arms' | 'head';
@@ -277,6 +321,10 @@ export interface GameState {
   readonly blobs: readonly Blob[];
   readonly pickups: readonly Pickup[];
   readonly nextPickupId: number;
+  /** Tick each mystery box is available again (0 = ready), in the order of the map's boxes. */
+  readonly boxReady: readonly number[];
+  /** Street events waiting to happen, or just happened. */
+  readonly events: readonly StreetEvent[];
   readonly seed: number;
   /** Number of bot slots (the last ones). The race ends when every human has finished. */
   readonly bots: number;
@@ -344,6 +392,11 @@ export interface PlayerView {
   readonly partsStolen: number;
   readonly lastLossTick: number;
   readonly rematch: boolean;
+  /** The last mystery box prize (ITEM_*) and when it was opened. */
+  readonly itemKind: number;
+  readonly itemTick: number;
+  /** Active effects: 1 surge, 2 shield, 4 slime trail, 8 slowed. */
+  readonly fx: number;
 }
 
 export interface GameProjection {
@@ -360,6 +413,9 @@ export interface GameProjection {
   readonly slicks: readonly Slick[];
   readonly blobs: readonly Blob[];
   readonly pickups: readonly Pickup[];
+  /** Tick each mystery box is available again (0 = ready), in the order of the map's boxes. */
+  readonly boxReady: readonly number[];
+  readonly events: readonly StreetEvent[];
   readonly finishOrder: readonly number[];
   /** Collision cells whose colliders are currently loaded (for the collider debug view). */
   readonly activeCells: readonly number[];
@@ -372,7 +428,7 @@ const ALL = 0xffffffff;
 export const carId = (slot: number): string => `car-${slot}`;
 const ropeId = (slot: number): string => `rope-${slot}`;
 
-const PIVOT_SPEED_SIGN = -1;
+const PIVOT_SPEED_SIGN = 1;
 export const ARM_TENTACLES = 1;
 export const ARM_CLAWS = 2;
 export const LEGS_HOPPER = 3;
@@ -518,6 +574,13 @@ function newPlayer(slot: number): PlayerState {
     rematch: false,
     lastSeen: -100000,
     inRace: false,
+    boostUntil: 0,
+    shieldUntil: 0,
+    slimeUntil: 0,
+    slowUntil: 0,
+    bumpUntil: 0,
+    itemKind: 0,
+    itemTick: -1000,
   };
 }
 
@@ -534,6 +597,8 @@ export function createGameState(config: SessionConfig, prep: PreparedMap): GameS
     blobs: [],
     pickups: [],
     nextPickupId: 1,
+    boxReady: prep.features.boxes.map(() => 0),
+    events: [],
     seed: config.seed,
     bots: config.bots ?? 0,
     botLevel: config.botLevel ?? 1,
@@ -691,6 +756,25 @@ export function hash32(a: number, b: number, c: number): number {
   return h >>> 0;
 }
 
+/** True when racer `a` is further along the route than racer `b` (more checkpoints, or nearer the next one). */
+function isAhead(world: DeterministicPhysicsWorld3D, prep: PreparedMap, a: PlayerState, b: PlayerState): boolean {
+  if (a.nextCheckpoint !== b.nextCheckpoint) return a.nextCheckpoint > b.nextCheckpoint;
+  const cp = prep.checkpoints[a.nextCheckpoint];
+  const ba = deterministicPhysicsBodyById3D(world, carId(a.slot)), bb = deterministicPhysicsBodyById3D(world, carId(b.slot));
+  if (cp === undefined || ba === undefined || bb === undefined) return a.slot < b.slot;
+  return Math.hypot(ba.x - cp.x, ba.z - cp.z) < Math.hypot(bb.x - cp.x, bb.z - cp.z);
+}
+
+/** The racer furthest along the route, or undefined when nobody is still racing. */
+function leaderOf(world: DeterministicPhysicsWorld3D, prep: PreparedMap, players: readonly PlayerState[]): number | undefined {
+  let lead: PlayerState | undefined;
+  for (const p of players) {
+    if (!p.inRace || p.finishTick >= 0 || deterministicPhysicsBodyById3D(world, carId(p.slot)) === undefined) continue;
+    if (lead === undefined || isAhead(world, prep, p, lead)) lead = p;
+  }
+  return lead?.slot;
+}
+
 const slotOfCar = (id: string): number => (id.startsWith('car-') ? Number(id.slice(4)) : -1);
 
 /** Same body, new mass and top speed for a changed build (position, velocity and spin are kept). */
@@ -713,6 +797,8 @@ function restartState(state: GameState, frame: number, prep: PreparedMap): GameS
     blobs: [],
     pickups: [],
     nextPickupId: 1,
+    boxReady: prep.features.boxes.map(() => 0),
+    events: [],
     finishOrder: [],
     activeCells: [],
     raceStart: 0,
@@ -826,6 +912,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
   let players = basePlayers;
   let slicks = state.slicks;
   let blobs = state.blobs;
+  let events = state.events;
+  let boxReady = state.boxReady;
   /** Grabs that ran out of time this tick: the grabber steals a part (resolved with the other steals after the physics step). */
   const grabSteals: { attacker: number; victim: number }[] = [];
   /** Loose parts a claw reached for this tick: slot of the grabber -> pickup id. */
@@ -1072,7 +1160,10 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       const airborne = hopAir > 0;
       const oil = featureAt(prep.features.oils, body.x, body.z) !== undefined;
       const gripMul = Math.min(slickGripMul(state.slicks, body.x, body.z, p.slot), oil ? OIL_GRIP_MUL : 1);
-      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul));
+      const slowUntil = p.slowUntil;
+      let bumpUntil = p.bumpUntil;
+      let bumpedSlow = slowUntil;
+      const vehicle = vehicleFor(p.slot, p.build, gripMul, (prep.onRoad(body.x, body.z) ? 1 : legsOf(p.build).offRoadMul) * (frame < slowUntil ? SLOW_DRIVE_MUL : 1));
       // Pivot in place at a standstill so the monster can turn around when it is stuck: while it is nearly
       // stopped and steering hard it stops driving into the obstacle and spins on the spot instead.
       const speedMs = Math.hypot(body.vx, body.vz) * TICK_RATE;
@@ -1092,6 +1183,31 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         const push = MASS_UNIT * massOf(p.build) * PAD_ACCEL;
         impulses.push({ bodyId: carId(p.slot), impulse: { x: pad.dx * push, y: 0, z: pad.dz * push }, worldPoint: { x: body.x, y: body.y, z: body.z } });
       }
+      // Mystery box effects and wandering creatures.
+      if (live) {
+        const ori = body.orientation ?? { x: 0, y: 0, z: 0, w: 1 };
+        const hx = 2 * (ori.x * ori.z + ori.w * ori.y), hz = 1 - 2 * (ori.x * ori.x + ori.y * ori.y);
+        const hl = Math.hypot(hx, hz) || 1;
+        const mass = MASS_UNIT * massOf(p.build);
+        if (frame < p.boostUntil) {
+          impulses.push({ bodyId: carId(p.slot), impulse: { x: (hx / hl) * mass * SURGE_ACCEL, y: 0, z: (hz / hl) * mass * SURGE_ACCEL }, worldPoint: { x: body.x, y: body.y, z: body.z } });
+        }
+        if (frame < p.slimeUntil && frame % 6 === 0) {
+          newSlicks.push({ x: body.x - (hx / hl) * 2.4, z: body.z - (hz / hl) * 2.4, expires: frame + HEADS.slime.slickLifeTicks, owner: p.slot });
+        }
+        if (frame >= bumpUntil) {
+          prep.features.roamers.some((r, ri) => {
+            const at = roamerAt(r, ri, raceStart, frame);
+            const dx = body.x - at.x, dz = body.z - at.z, d = Math.hypot(dx, dz);
+            if (d > ROAMER_RADIUS + 1.3) return false;
+            const nx = d > 0.01 ? dx / d : 0, nz = d > 0.01 ? dz / d : 1;
+            impulses.push({ bodyId: carId(p.slot), impulse: { x: nx * mass * ROAMER_BUMP_SHOVE, y: 0, z: nz * mass * ROAMER_BUMP_SHOVE }, worldPoint: { x: body.x, y: body.y, z: body.z } });
+            bumpUntil = frame + ROAMER_BUMP_COOLDOWN_TICKS;
+            if (frame >= p.shieldUntil) bumpedSlow = Math.max(bumpedSlow, frame + ROAMER_SLOW_TICKS);
+            return true;
+          });
+        }
+      }
       if (pivoting) {
         const fade = Math.min(1, (1 - speedMs / PIVOT_SPEED) * 2.5); // full torque until 60% of the pivot speed
         torques.push({ bodyId: carId(p.slot), torque: { x: 0, y: PIVOT_SPEED_SIGN * (input.steer / 100) * fade * PIVOT_TORQUE * MASS_UNIT, z: 0 } });
@@ -1108,6 +1224,8 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
         hopCharge,
         hopReadyAt,
         hopAir,
+        slowUntil: bumpedSlow,
+        bumpUntil,
         armsCooldown,
         headCooldown,
         trailLeft,
@@ -1184,6 +1302,21 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     });
   }
 
+  // Street events: every so often something happens a little way ahead of the leader (a warning shows first).
+  if (phase === 'RACING') {
+    events = events.filter((e) => frame < e.fireAt + EVENT_LINGER_TICKS);
+    const since = frame - raceStart;
+    if (since >= EVENT_FIRST_TICKS && (since - EVENT_FIRST_TICKS) % EVENT_PERIOD_TICKS === 0) {
+      const lead = leaderOf(world, prep, players);
+      const body = lead === undefined ? undefined : deterministicPhysicsBodyById3D(world, carId(lead));
+      const spot = body === undefined ? undefined : routeAhead(prep.map, body.x, body.z, EVENT_AHEAD_M);
+      if (spot !== undefined) {
+        const kind = 1 + (hash32(state.seed ^ 0xe7e47, frame, raceStart) % 3);
+        events = [...events, { kind, ...spot, fireAt: frame + EVENT_TELEGRAPH_TICKS }];
+      }
+    }
+  }
+
   if (racing) {
     const finishedNow: number[] = [];
     players = players.map((p) => {
@@ -1217,6 +1350,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     const clawsCanSteal = (attacker: number, victim: number): boolean => {
       const a = players[attacker], v = players[victim];
       if (a === undefined || v === undefined || a.finishTick >= 0 || v.finishTick >= 0) return false;
+      if (frame < v.shieldUntil) return false;
       if (a.build.arms !== ARM_CLAWS || frame < a.clawCooldownUntil || stealing.has(attacker) || stolenFrom.has(victim)) return false;
       if (SLOT_KEYS.every((k) => v.build[k] === 0)) return false;
       const ba = deterministicPhysicsBodyById3D(world, carId(attacker)), bv = deterministicPhysicsBodyById3D(world, carId(victim));
@@ -1301,9 +1435,50 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     // A stolen-from monster loses a part instead of taking a normal hit from that contact.
     for (const victim of stolenFrom) hitAt.delete(victim);
 
+    // --- street events happening now ---
+    for (const ev of events) {
+      if (ev.fireAt !== frame) continue;
+      if (ev.kind === EVENT_LIGHTNING) {
+        const shoves: { bodyId: string; impulse: { x: number; y: number; z: number }; worldPoint: { x: number; y: number; z: number } }[] = [];
+        const struck = new Set<number>();
+        for (const p of players) {
+          if (!p.inRace || p.finishTick >= 0) continue;
+          const b = deterministicPhysicsBodyById3D(world, carId(p.slot));
+          if (b === undefined) continue;
+          const dx = b.x - ev.x, dz = b.z - ev.z, d = Math.hypot(dx, dz);
+          if (d > LIGHTNING_RADIUS) continue;
+          const nx = d > 0.01 ? dx / d : 0, nz = d > 0.01 ? dz / d : 1;
+          const mass = MASS_UNIT * massOf(p.build);
+          shoves.push({ bodyId: carId(p.slot), impulse: { x: nx * mass * LIGHTNING_SHOVE, y: 0, z: nz * mass * LIGHTNING_SHOVE }, worldPoint: { x: b.x, y: b.y, z: b.z } });
+          hitAt.set(p.slot, { x: b.x, z: b.z, weight: 1 });
+          struck.add(p.slot);
+        }
+        if (shoves.length > 0) world = applyDeterministicImpulses3D(world, shoves);
+        if (struck.size > 0) players = players.map((p) => (struck.has(p.slot) && frame >= p.shieldUntil ? { ...p, slowUntil: Math.max(p.slowUntil, frame + LIGHTNING_SLOW_TICKS) } : p));
+      } else if (ev.kind === EVENT_FLOOD) {
+        // A run of slippery puddles along the road, for everyone (owner -1 is nobody's own slime).
+        const puddles: Slick[] = [];
+        for (let k = 0; k < FLOOD_PUDDLES; k += 1) {
+          const along = (k - (FLOOD_PUDDLES - 1) / 2) * FLOOD_STEP_M;
+          puddles.push({ x: ev.x + ev.dx * along, z: ev.z + ev.dz * along, expires: frame + FLOOD_LIFE_TICKS, owner: -1 });
+        }
+        slicks = [...slicks, ...puddles];
+      } else if (ev.kind === EVENT_RAIN) {
+        // Loose parts fall onto the road: a chance for a stripped monster to build itself back up.
+        for (let k = 0; k < RAIN_PARTS; k += 1) {
+          const along = (k - (RAIN_PARTS - 1) / 2) * RAIN_STEP_M;
+          const h = hash32(state.seed ^ 0x7a1d, frame, k);
+          const slotKey = SLOT_KEYS[h % SLOT_KEYS.length]!;
+          const count = (slotKey === 'legs' ? LEG_PARTS : slotKey === 'arms' ? ARM_PARTS : HEAD_PARTS).length - 1;
+          pickups = [...pickups, { id: nextPickupId, slot: slotKey, part: 1 + ((h >>> 8) % count), x: ev.x + ev.dx * along, z: ev.z + ev.dz * along, expires: frame + PICKUP_LIFE_TICKS, armedAt: frame, owner: -1, ownerArmedAt: frame }];
+          nextPickupId += 1;
+        }
+      }
+    }
+
     players = players.map((p) => {
       const point = hitAt.get(p.slot);
-      if (point === undefined || p.finishTick >= 0 || frame < p.hitCooldownUntil) return p;
+      if (point === undefined || p.finishTick >= 0 || frame < p.hitCooldownUntil || frame < p.shieldUntil) return p;
       const body = BODIES[p.build.body] ?? BODIES[0]!;
       const hits = p.hits + point.weight;
       const equipped = SLOT_KEYS.filter((k) => p.build[k] !== 0);
@@ -1369,6 +1544,41 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
       if (taken.size > 0) pickups = pickups.filter((pk) => !taken.has(pk.id));
     }
 
+    // --- mystery boxes: driving through one opens it ---
+    if (prep.features.boxes.length > 0) {
+      let opened: number[] | null = null;
+      prep.features.boxes.forEach((box, i) => {
+        if (frame < (boxReady[i] ?? 0)) return;
+        for (const p of players) {
+          if (!p.inRace || p.finishTick >= 0) continue;
+          const b = deterministicPhysicsBodyById3D(world, carId(p.slot));
+          if (b === undefined || Math.hypot(b.x - box.x, b.z - box.z) > BOX_RADIUS) continue;
+          const racers = players.filter((q) => q.inRace && q.finishTick < 0);
+          const ahead = racers.filter((q) => q.slot !== p.slot && isAhead(world, prep, q, p)).length;
+          const behind = racers.length > 1 ? ahead / (racers.length - 1) : 0;
+          const h = hash32(state.seed ^ 0xb0c5, frame, p.slot * 64 + i);
+          const item = rollItem(behind, missingSlots(p.build) > 0, h >>> 4);
+          let q: PlayerState = { ...p, itemKind: item, itemTick: frame };
+          if (item === ITEM_SURGE) q = { ...q, boostUntil: frame + SURGE_TICKS };
+          else if (item === ITEM_SHIELD) q = { ...q, shieldUntil: frame + SHIELD_TICKS };
+          else if (item === ITEM_SLIME) q = { ...q, slimeUntil: frame + SLIME_TICKS };
+          else if (item === ITEM_JINX) q = { ...q, slowUntil: frame + JINX_TICKS };
+          else if (item === ITEM_MEND) {
+            const empty = SLOT_KEYS.filter((k) => q.build[k] === 0);
+            const slotKey = empty[(h >>> 12) % empty.length]!;
+            const count = (slotKey === 'legs' ? LEG_PARTS : slotKey === 'arms' ? ARM_PARTS : HEAD_PARTS).length - 1;
+            q = { ...q, build: { ...q.build, [slotKey]: 1 + ((h >>> 16) % count) }, partsGained: q.partsGained + 1 };
+            changed.add(q.slot);
+          }
+          players = players.map((x) => (x.slot === q.slot ? q : x));
+          opened = opened ?? boxReady.slice();
+          opened[i] = frame + BOX_RESPAWN_TICKS;
+          break;
+        }
+      });
+      if (opened !== null) boxReady = opened;
+    }
+
     // Hunchback Hump: a spare part is fitted the moment its slot is empty, and is lost with the hump.
     players = players.map((pl) => {
       if (pl.spare === null) return pl;
@@ -1419,7 +1629,7 @@ export function stepGame(state: GameState, rawInputs: readonly GameInput[], prep
     }
   }
 
-  return { frame, phase, phaseStart, physics: world, players, slicks, blobs, pickups, nextPickupId, seed: state.seed, bots: state.bots, botLevel, raceStart, finishOrder, activeCells };
+  return { frame, phase, phaseStart, physics: world, players, slicks, blobs, pickups, nextPickupId, boxReady, events, seed: state.seed, bots: state.bots, botLevel, raceStart, finishOrder, activeCells };
 }
 
 export function projectGame(state: GameState, prep: PreparedMap): GameProjection {
@@ -1467,6 +1677,9 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
       partsStolen: p.partsStolen,
       lastLossTick: p.lastLossTick,
       rematch: p.rematch,
+      itemKind: p.itemKind,
+      itemTick: p.itemTick,
+      fx: (state.frame < p.boostUntil ? 1 : 0) | (state.frame < p.shieldUntil ? 2 : 0) | (state.frame < p.slimeUntil ? 4 : 0) | (state.frame < p.slowUntil ? 8 : 0),
     };
   });
   return {
@@ -1480,6 +1693,8 @@ export function projectGame(state: GameState, prep: PreparedMap): GameProjection
     slicks: state.slicks,
     blobs: state.blobs,
     pickups: state.pickups,
+    boxReady: state.boxReady,
+    events: state.events,
     finishOrder: state.finishOrder,
     activeCells: state.activeCells,
   };

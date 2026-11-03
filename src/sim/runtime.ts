@@ -59,6 +59,11 @@ function parseSessionConfig(bytes: Uint8Array): SessionConfig {
   return value as SessionConfig;
 }
 
+/** The map a session config (from the room, as bytes) asks for. */
+export function mapOfSessionConfig(bytes: Uint8Array): string {
+  return parseSessionConfig(bytes).map;
+}
+
 /** Name under which a baked map is declared in the runtime identity. */
 export const mapAssetName = (id: string): string => `map-${id}`;
 

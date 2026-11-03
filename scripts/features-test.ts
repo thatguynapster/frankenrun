@@ -28,7 +28,7 @@ const prep = getPreparedMap(mapId);
 const config = { game: 'frankenrun', map: mapId, players: 4, bots: 3, seed: 1, tickRateHz: 30, version: 1 };
 // The same bot race twice: with the pads and oil, and with them switched off. Speeds are compared at the same places.
 function race(withFeatures: boolean): { pad: number[]; oil: number[]; crates: number } {
-  const usePrep = withFeatures ? prep : { ...prep, features: { pads: [], oils: [], crates: [] } };
+  const usePrep = withFeatures ? prep : { ...prep, features: { pads: [], oils: [], crates: [], boxes: [], roamers: [] } };
   let state: GameState = createGameState(config, usePrep);
   const pad: number[] = [], oil: number[] = [];
   const seen = new Set<number>();
@@ -50,7 +50,7 @@ const avg = (a: number[]): number => (a.length === 0 ? 0 : a.reduce((x, y) => x 
 const on = race(true), off = race(false);
 console.log(`on a pad: ${avg(on.pad).toFixed(0)} km/h with pads, ${avg(off.pad).toFixed(0)} without (${on.pad.length}/${off.pad.length} samples)`);
 console.log(`on oil: ${avg(on.oil).toFixed(0)} km/h with oil, ${avg(off.oil).toFixed(0)} without (${on.oil.length}/${off.oil.length} samples)`);
-check(on.crates > 0 && off.crates === 0, `loose parts appear on the road (${on.crates} in 150 s)`);
+check(on.crates > off.crates, `loose parts appear on the road (${on.crates} in 150 s)`);
 check(on.pad.length > 0, 'bots drive over pads');
 check(avg(on.pad) > avg(off.pad) * 1.08, 'speed on a pad is clearly above the same spot without pads');
 check(on.oil.length === 0 || avg(on.oil) <= avg(off.oil) * 1.02, 'oil does not speed anyone up');

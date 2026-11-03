@@ -8,6 +8,7 @@ import { FLOOR_Y, LobbyStage, STAGE_Y, stageSpot } from './LobbyStage.js';
 import { makeIcons } from './partIcons.js';
 import { buildCity, cullCity, cutaway } from './city.js';
 import { Particles } from './Particles.js';
+import { RaceFun } from './raceFun.js';
 import { Atmosphere } from './atmosphere.js';
 import { routeInfo, themeFor, type RouteTheme } from '../routes.js';
 import { DEFAULT_STYLE, type Style } from './monsters/style.js';
@@ -54,12 +55,13 @@ function onRoad<M extends THREE.Material>(material: M, level: number): M {
 export class RaceView {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(65, 1, 0.5, 900);
+  private camera = new THREE.PerspectiveCamera(65, 1, 1, 900);
   private cars: CarRig[] = [];
   private readonly lobbyStage = new LobbyStage();
   private lobbyOn = false;
   private lobbyTime = 0;
   private readonly particles = new Particles();
+  private readonly raceFun = new RaceFun();
   private shakeLeft = 0;
   private shakeFor = 0.3;
   private shakeAmp = 0;
@@ -142,6 +144,7 @@ export class RaceView {
     this.applyTheme(this.theme);
     this.scene.add(this.lobbyStage.group);
     this.scene.add(this.particles.points);
+    this.scene.add(this.raceFun.group);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -769,6 +772,7 @@ export class RaceView {
     for (const p of this.pickupPool) p.group.visible = false;
     for (const s of this.slickPool) s.visible = false;
     for (const b of this.blobPool) b.visible = false;
+    this.raceFun.hide();
     if (on && this.lanternMesh) this.lanternMesh.visible = false;
     if (on) this.camera.clearViewOffset();
     else {
@@ -954,6 +958,7 @@ export class RaceView {
       this.atmosphere.update(this.camera, frame.frame / 30, true);
       this.updateSlicks(frame, dtSeconds, frame.frame / 30);
       this.updatePickups(frame, frame.frame / 30);
+      if (this.prep !== undefined) this.raceFun.update(frame, this.prep, this.camera, dtSeconds, this.particles);
       // A player with no monster in this race (late joiner, or left out of it) watches the race leader.
       const own = frame.players[localSlot] ?? frame.players[0];
       const local = own !== undefined && own.present ? own : (frame.players.filter((p) => p.present && !p.bot).sort((a, b) => b.nextCheckpoint - a.nextCheckpoint)[0] ?? own);

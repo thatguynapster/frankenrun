@@ -137,7 +137,8 @@ export interface UiState {
 type Listener = (state: UiState) => void;
 
 /** How long a connect or a room sync may take before we give up and let the player retry. */
-const CONNECT_TIMEOUT_MS = 20000;
+// A route map is up to about 0.8 MB: on a slow mobile link that alone can take a minute, so connecting waits a good while.
+const CONNECT_TIMEOUT_MS = 75000;
 /** A live race that makes no progress for this long is treated as a lost connection. */
 const STALL_TIMEOUT_MS = 8000;
 /** After returning to a hidden tab the connection may need a while to catch up; the stall watchdog stays quiet for this long. */
@@ -1027,7 +1028,7 @@ export class Game {
   }
 
   /** Loads the routes a session may need (all of them when joining, since the room decides the route). */
-  private async enter(start: () => Promise<void>, maps: readonly string[] = ROUTES.map((r) => r.id), kind: Game['roomKind'] = 'practice'): Promise<void> {
+  private async enter(start: () => Promise<void>, maps: readonly string[] = [], kind: Game['roomKind'] = 'practice'): Promise<void> {
     this.roomKind = kind;
     this.aloneSince = 0;
     this.botOptOut = false;
@@ -1195,7 +1196,7 @@ export class Game {
     }, [map], 'private');
   }
   join(code: string): Promise<void> {
-    return this.enter(() => joinRace(this.runner, code.trim().toUpperCase()), undefined, 'joined');
+    return this.enter(() => joinRace(this.runner, code.trim().toUpperCase()), [], 'joined');
   }
   /**
    * Re-enters the room we were dropped from. The seat is reclaimed and the match history is replayed. The
@@ -1217,7 +1218,6 @@ export class Game {
         this.emit();
         await new Promise((r) => setTimeout(r, REJOIN_DELAYS_MS[attempt]));
         try {
-          await Promise.all(ROUTES.map((r) => ensureMap(r.id)));
           await withTimeout(joinRace(this.runner, code), CONNECT_TIMEOUT_MS, () => this.runner.stop());
           this.bindNames();
           this.screen = 'play';
@@ -1420,7 +1420,7 @@ export class Game {
       return;
     }
     try {
-      await Promise.all(ROUTES.map((r) => ensureMap(r.id)));
+      await ensureMap(routeId);
       const session = makeSessionConfig(routeId);
       this.runner.requestReconfigure(session.bytes, session.digest);
       this.roomNote = '';

@@ -4,6 +4,10 @@ import * as THREE from 'three';
 import type { MapData } from './sim/mapdata.js';
 import { buildCity, cullCity } from './render/city.js';
 import { THEMES, routeInfo } from './routes.js';
+import { RaceFun } from './render/raceFun.js';
+import { Particles } from './render/Particles.js';
+import { registerMap, getPreparedMap } from './sim/world.js';
+import type { GameProjection } from './sim/game.js';
 
 const hideOverlay = (): void => document.getElementById('rundot-game-sandbox-loading')?.remove();
 hideOverlay();
@@ -18,6 +22,13 @@ let world: THREE.Group | undefined;
 let cityMeshes: THREE.Object3D[] = [];
 let fogFar = 230;
 let map: MapData | undefined;
+let prep: ReturnType<typeof getPreparedMap> | undefined;
+const fun = new RaceFun();
+const particles = new Particles();
+scene.add(fun.group, particles.points);
+scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x302040, 1.8), new THREE.DirectionalLight(0xffe2c0, 1.2));
+/** A fake race frame for looking at the race surprises: tick, and a street event of the given kind 1.5 s away. */
+let funFrame: Partial<GameProjection> | undefined;
 
 async function load(id: string): Promise<void> {
   const res = await fetch(`/cdn-assets/${routeInfo(id)?.city ?? "accra"}/${id}.map.json.gz`);
@@ -40,6 +51,8 @@ async function load(id: string): Promise<void> {
   fogFar = theme.fogFar;
   for (const o of cityMeshes) world.add(o);
   scene.add(world);
+  registerMap(map);
+  prep = getPreparedMap(id);
 }
 
 function triangles(): number {
@@ -73,6 +86,11 @@ const view = {
     camera.lookAt(x + Math.sin(a) * 12, 3, z + Math.cos(a) * 12);
   },
   triangles,
+  /** Shows the mystery boxes, creatures and an event warning on the loaded route. event 0 = none, 1 lightning, 2 flood, 3 rain. */
+  fun(tick: number, event = 0, ex = 0, ez = 0): void {
+    const events = event === 0 ? [] : [{ kind: event, x: ex, z: ez, dx: 1, dz: 0, fireAt: tick + 40 }];
+    funFrame = { frame: tick, phase: 'RACING', raceStart: 0, events, boxReady: prep?.features.boxes.map(() => 0) ?? [], players: [] };
+  },
   /** Lays a green disc (like a slime puddle) on the road at (x, z); level is the polygon offset the game gives road decals, 0 for none. */
   decal(x: number, z: number, level: number, color = 0x35d84a): void {
     const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, depthWrite: false });
@@ -127,6 +145,10 @@ const view = {
 function frame(): void {
   cullCity(cityMeshes, camera.position.x, camera.position.z, fogFar);
   for (const m of cityMeshes) if (m.userData["off"] === true) m.visible = false;
+  if (prep !== undefined && funFrame !== undefined) {
+    fun.update(funFrame as GameProjection, prep, camera, 1 / 60, particles);
+    particles.update(1 / 60);
+  }
   renderer.render(scene, camera);
   info.textContent = `${Math.round(triangles()).toLocaleString()} triangles, ${renderer.info.render.calls} draw calls`;
   requestAnimationFrame(frame);

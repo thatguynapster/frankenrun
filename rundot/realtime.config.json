@@ -7,7 +7,9 @@
         "maxPlayers": 4,
         "tickRateHz": 30,
         "reconnectTimeout": 30,
-        "reconfigurePolicy": "creator"
+        "reconfigurePolicy": "creator",
+        "hardToleranceTicks": 12,
+        "redundancyWindowTicks": 16
       }
     }
   ]

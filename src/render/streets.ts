@@ -10,7 +10,9 @@ import * as THREE from 'three';
 import type { MapData } from '../sim/mapdata.js';
 
 const CHUNK = 100; // metres, as in city.ts: meshes are split per chunk so the view can skip far ones
-const Y = 0.05;
+// Each layer sits a centimetre above the one under it, so the depth buffer can tell them apart on its own. The polygon
+// offsets below only back that up: on their own they are too fine to hold on phones, and the layers flickered into each other.
+const LAYER_Y = { pavement: 0.03, kerb: 0.04, asphalt: 0.05, paint: 0.06 } as const;
 const PAVE_WIDTH = 1.5; // metres beyond the kerb
 const KERB_WIDTH = 0.35;
 const MIN_PAVED_HW = 2.5; // narrower lanes get asphalt only
@@ -180,7 +182,7 @@ export function buildStreets(map: MapData, tint = 0xffffff): THREE.Mesh[] {
     return c;
   };
   const tri = (layer: Layer, ax: number, az: number, bx: number, bz: number, cx: number, cz: number): void => {
-    target((ax + bx + cx) / 3, (az + bz + cz) / 3)[layer].push(ax, Y, az, bx, Y, bz, cx, Y, cz);
+    target((ax + bx + cx) / 3, (az + bz + cz) / 3)[layer].push(ax, LAYER_Y[layer], az, bx, LAYER_Y[layer], bz, cx, LAYER_Y[layer], cz);
   };
   const quad = (layer: Layer, ax: number, az: number, bx: number, bz: number, cx: number, cz: number, dx: number, dz: number): void => {
     tri(layer, ax, az, bx, bz, cx, cz);

@@ -76,6 +76,8 @@ export class AudioEngine {
   private buffers = new Map<string, AudioBuffer>();
   private loading = new Set<string>();
   private missing = new Set<string>();
+  /** Files whose download failed (a flaky connection): when each may be tried again, and how many tries so far. */
+  private retryAt = new Map<string, { at: number; tries: number }>();
   private scene: Scene = 'title';
   private music: { id: string; gain: GainNode; source: AudioBufferSourceNode } | undefined;
   private voices = 0;
@@ -166,7 +168,7 @@ export class AudioEngine {
 
   private async load(file: string): Promise<AudioBuffer | undefined> {
     const cached = this.buffers.get(file);
-    if (cached !== undefined || this.ctx === undefined || this.missing.has(file) || this.loading.has(file)) return cached;
+    if (cached !== undefined || this.ctx === undefined || this.missing.has(file) || this.loading.has(file) || (this.retryAt.get(file)?.at ?? 0) > performance.now()) return cached;
     this.loading.add(file);
     try {
       const blob = await RundotGameAPI.cdn.fetchAsset(file);
@@ -174,7 +176,10 @@ export class AudioEngine {
       this.buffers.set(file, decoded);
       return decoded;
     } catch {
-      this.missing.add(file); // not generated yet (or not decodable): stay silent, do not retry every frame
+      // Not generated yet, not decodable, or the connection dropped. Try a few more times, well apart, then stay silent.
+      const tries = (this.retryAt.get(file)?.tries ?? 0) + 1;
+      if (tries >= 4) this.missing.add(file);
+      else this.retryAt.set(file, { at: performance.now() + 8000 * tries, tries });
       return undefined;
     } finally {
       this.loading.delete(file);

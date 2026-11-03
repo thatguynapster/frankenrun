@@ -328,7 +328,7 @@ function MenuPanel({ game, ui, fromTitle = false }: { game: Game; ui: UiState; f
 
 /** The control keys for the scheme in use. */
 function keysHelp(ui: UiState): string {
-  if (ui.touch) return 'Drag on the left to steer · tap the buttons for abilities (hold Leap to charge a jump) · swipe Slime up to throw it ahead, down to throw it behind · hold Reset to return to the last checkpoint';
+  if (ui.touch) return 'Drag on the left to steer, and pull down to slow or stop (stopped, steer to turn on the spot) · tap the buttons for abilities (hold Leap to charge a jump) · swipe Slime up to throw it ahead, down to throw it behind · hold Reset to return to the last checkpoint';
   return 'W go · S brake · A/D steer (hold steer when stuck to turn around) · J tentacles · K slime behind · I slime ahead · hold L to charge a leap, let go to jump · hold R to reset · Space to get up if you fall over · Esc menu';
 }
 
@@ -404,6 +404,22 @@ function RouteCarousel({ ui, game, routes, onPick }: { ui: UiState; game: Game; 
 const BOT_NAMES = ['Ghoul', 'Wraith', 'Zombie', 'Mummy', 'Banshee', 'Vampire', 'Gremlin', 'Specter', 'Goblin', 'Ghost'];
 /** The name an AI racer races under. */
 const botName = (slot: number): string => `${BOT_NAMES[slot % BOT_NAMES.length]} (bot)`;
+
+/** Mystery box prizes by id (see sim/events.ts): headline and a short line. */
+const ITEM_BANNERS: Readonly<Record<number, readonly [string, string]>> = {
+  1: ['Surge!', 'Hold on tight'],
+  2: ['Shield!', 'Nothing can knock a part off'],
+  3: ['Slime trail!', 'Rivals behind you will slip'],
+  4: ['Mended!', 'A missing part is back'],
+  5: ['Jinxed!', 'You are slowed for a moment'],
+};
+
+/** Street events by kind (see sim/events.ts). */
+const EVENT_BANNERS: Readonly<Record<number, readonly [string, string]>> = {
+  1: ['Lightning ahead!', 'Steer clear of the glowing circle'],
+  2: ['Slime flood ahead!', 'The road is about to get slippery'],
+  3: ['Parts rain ahead!', 'Free parts are about to drop'],
+};
 
 function ResultsPanel({ game, frame, meSlot, mode, banner, names, shareNote, sub, styles, checkpointTotal }: { game: Game; frame: GameProjection; meSlot: number; checkpointTotal: number; mode: 'live' | 'finished' | 'stale'; banner?: string; names: Readonly<Record<number, string>>; shareNote: string; sub: UiState['lastSubmission']; styles: Readonly<Record<number, Style>> }) {
   const me = frame.players[meSlot];
@@ -724,6 +740,9 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
       })
       .findIndex((p) => p.slot === me.slot) + 1;
 
+  // A street event about to happen near enough to matter: warn the player (the area is also marked on the road).
+  const warning = frame.events.find((e) => e.fireAt > frame.frame && Math.hypot(e.x - me.x, e.z - me.z) < 190);
+
   return (
     <>
       <div className="hud">
@@ -760,6 +779,18 @@ function PlayOverlay({ game, ui }: { game: Game; ui: UiState }) {
           <div className="waypoint">
             <div className="arrow" style={{ transform: `rotate(${-ui.hint.angle}deg)` }} />
             <span>{Math.round(ui.hint.distance)} m</span>
+          </div>
+        )}
+        {frame.phase === 'RACING' && me.finishTick < 0 && frame.frame - me.itemTick < 75 && ITEM_BANNERS[me.itemKind] !== undefined && (
+          <div key={me.itemTick} className={`surprise item${me.itemKind}`}>
+            <strong>{ITEM_BANNERS[me.itemKind]![0]}</strong>
+            <small>{ITEM_BANNERS[me.itemKind]![1]}</small>
+          </div>
+        )}
+        {frame.phase === 'RACING' && me.finishTick < 0 && warning !== undefined && (
+          <div key={warning.fireAt} className="surprise warn">
+            <strong>{EVENT_BANNERS[warning.kind]![0]}</strong>
+            <small>{EVENT_BANNERS[warning.kind]![1]}</small>
           </div>
         )}
         {frame.phase === 'COUNTDOWN' && <div className="big">{Math.max(1, Math.ceil((90 - frame.phaseTicks) / TICK))}</div>}
@@ -946,31 +977,40 @@ function SlimeButton(props: { hint: string; icon: string | undefined; on: boolea
 
 function SteerZone({ game, touch, sensitivity }: { game: Game; touch: boolean; sensitivity: number }) {
   const originX = useRef(0);
+  const originY = useRef(0);
   const knob = useRef<HTMLDivElement | null>(null);
-  const moveKnob = (dx: number) => {
-    if (knob.current) knob.current.style.transform = `translateX(${Math.max(-1, Math.min(1, dx)) * 42}px)`;
+  const moveKnob = (dx: number, dy = 0) => {
+    if (knob.current) knob.current.style.transform = `translate(${Math.max(-1, Math.min(1, dx)) * 42}px, ${Math.max(0, Math.min(1, dy)) * 34}px)`;
   };
+  // Pull down to slow: a short pull eases off the throttle, a long one brakes (and a stopped monster then turns on the spot).
+  const speedFor = (pull: number): number => (pull < 0.2 ? 1 : pull >= 0.8 ? -1 : 1 - (pull - 0.2) / 0.6);
   return (
     <div
       className="steer-zone"
       onPointerDown={(e) => {
         if (e.pointerType === 'mouse') return; // the mouse is for aiming, not steering
         originX.current = e.clientX;
+        originY.current = e.clientY;
         e.currentTarget.setPointerCapture(e.pointerId);
         game.controls.setTouchSteer(0);
+        game.controls.setTouchSpeed(1);
       }}
       onPointerMove={(e) => {
         if (e.pointerType === 'mouse' || e.buttons === 0) return;
         const value = (e.clientX - originX.current) / (60 * sensitivity);
+        const pull = Math.max(0, (e.clientY - originY.current) / 60);
         game.controls.setTouchSteer(value);
-        moveKnob(value);
+        game.controls.setTouchSpeed(speedFor(pull));
+        moveKnob(value, pull);
       }}
       onPointerUp={() => {
         game.controls.setTouchSteer(0);
+        game.controls.setTouchSpeed(1);
         moveKnob(0);
       }}
       onPointerCancel={() => {
         game.controls.setTouchSteer(0);
+        game.controls.setTouchSpeed(1);
         moveKnob(0);
       }}
     >
@@ -979,7 +1019,8 @@ function SteerZone({ game, touch, sensitivity }: { game: Game; touch: boolean; s
           <span className="joy-arrow left">◀</span>
           <span className="joy-arrow right">▶</span>
           <div className="joy-knob" ref={knob} />
-          <small>drag to steer</small>
+          <span className="joy-arrow down">▼</span>
+          <small>drag to steer · pull down to slow</small>
         </div>
       )}
     </div>

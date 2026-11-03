@@ -5,6 +5,8 @@ export class Controls {
   private keys = new Set<string>();
   private touchSteer = 0; // -1 (left) .. 1 (right), screen sense
   private touchBrake = false;
+  /** Touch speed from the steering drag: 1 = flat out (hands off), 0 = coast, -1 = brake. */
+  private touchSpeed = 1;
   private touchArms = false;
   private touchHead = false;
   private touchLegs = false;
@@ -31,6 +33,10 @@ export class Controls {
   setTouchSteer(value: number): void {
     this.touchActive = true;
     this.touchSteer = Math.max(-1, Math.min(1, value));
+  }
+  setTouchSpeed(value: number): void {
+    this.touchActive = true;
+    this.touchSpeed = Math.max(-1, Math.min(1, value));
   }
   setTouchBrake(on: boolean): void {
     this.touchActive = true;
@@ -86,7 +92,9 @@ export class Controls {
     const forward = this.down('KeyW', 'ArrowUp');
     const back = this.down('KeyS', 'ArrowDown') || this.touchBrake;
     // Touch has auto-throttle on; keyboard needs W.
-    const throttle = back ? -100 : forward || (this.touchActive && !this.touchBrake) ? 100 : 0;
+    // Pulling the touch drag down eases off the throttle, then brakes; at a standstill the sim pivots the monster on the spot.
+    const touchThrottle = this.touchSpeed < -0.5 ? -100 : Math.round(Math.max(0, this.touchSpeed) * 10) * 10;
+    const throttle = back ? -100 : forward ? 100 : this.touchActive && !this.touchBrake ? touchThrottle : 0;
     return {
       ...base,
       throttle,

@@ -8,6 +8,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { BuildingData, MapData } from '../sim/mapdata.js';
 import { Shape } from './monsters/shapes.js';
 import { buildStreets } from './streets.js';
+import { separateOverlaps } from './overlaps.js';
 import { landmarkModel, landmarksOf, type Landmark } from './landmarks.js';
 
 // ---------- tunables ----------
@@ -379,6 +380,25 @@ class WallBuilder {
       this.k.push(0);
     }
   }
+}
+
+/** The same building a few centimetres taller and narrower, so it does not share a roof or wall plane with one it overlaps. */
+function separated(b: BuildingData, s: { lift: number; shrink: number }): BuildingData {
+  if (s.lift === 0) return b;
+  let cx = 0, cz = 0;
+  const n = b.pts.length / 2;
+  for (let k = 0; k < b.pts.length; k += 2) {
+    cx += b.pts[k]!;
+    cz += b.pts[k + 1]!;
+  }
+  cx /= n;
+  cz /= n;
+  let r = 0;
+  for (let k = 0; k < b.pts.length; k += 2) r += Math.hypot(b.pts[k]! - cx, b.pts[k + 1]! - cz);
+  r = Math.max(1, r / n / 10); // mean corner distance in metres
+  const k = Math.max(0.5, 1 - s.shrink / r);
+  const pts = b.pts.map((v, j) => (j % 2 === 0 ? cx + (v - cx) * k : cz + (v - cz) * k));
+  return { ...b, pts, h: b.h + s.lift * 10 };
 }
 
 /** Walls (plinth, windowed body, cornice, parapet), then a roof: pitched with eaves over small houses, flat over big blocks. */
@@ -778,8 +798,10 @@ export function buildCity(map: MapData, tint = 0xffffff, city = 'accra'): THREE.
   const chunks = new Map<string, Chunk>();
   const landmarks = landmarksOf(map.id);
   const beacons: THREE.BufferGeometry[] = [];
-  map.buildings.forEach((b, i) => {
-    if (b.car !== undefined) return; // parked cars are drawn below
+  const apart = separateOverlaps(map.buildings);
+  map.buildings.forEach((original, i) => {
+    if (original.car !== undefined) return; // parked cars are drawn below
+    const b = separated(original, apart[i]!);
     const f = footprintOf(b);
     if (f === undefined) return;
     const landmark = landmarks.find((l) => inside(f, l.x, l.z));

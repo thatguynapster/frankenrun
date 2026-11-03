@@ -23,8 +23,22 @@ export function ensureMap(id: string): Promise<MapData> {
   return pending;
 }
 
+/** A slow or flaky connection often drops a download part way: try a few times before giving up. */
+async function fetchWithRetry(path: string): Promise<Blob> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    try {
+      return await RundotGameAPI.cdn.fetchAsset(path);
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
+}
+
 async function load(id: string): Promise<MapData> {
-  const blob = await RundotGameAPI.cdn.fetchAsset(`${routeInfo(id)?.city ?? 'accra'}/${id}.map.json.gz`);
+  const blob = await fetchWithRetry(`${routeInfo(id)?.city ?? 'accra'}/${id}.map.json.gz`);
   let bytes = new Uint8Array(await blob.arrayBuffer());
   // Some hosts (including the dev server) send .gz with Content-Encoding: gzip, so the browser has already
   // decompressed it; others hand over the raw gzip. Only decompress when the gzip magic bytes are present.
