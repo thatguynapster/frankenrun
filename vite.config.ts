@@ -1,7 +1,7 @@
 import path from 'path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { rundotGameLibrariesPlugin } from '@series-inc/rundot-game-sdk/vite';
+import { rundotGameLibrariesPlugin, rundotGamePlaygroundPlugin, rundotMultiplayerPlugin } from '@series-inc/rundot-game-sdk/vite';
 
 // CDN assets in cdn/ folder are automatically served in dev mode
 
@@ -9,6 +9,10 @@ export default defineConfig({
   plugins: [
     react(), // Must come first - handles JSX transform
     rundotGameLibrariesPlugin(),
+    rundotGamePlaygroundPlugin(), // local testing against the RUN playground backend (dev server only)
+    // Copies rundot/realtime.config.json to dist/rooms.config.json so the real host registers the
+    // deterministic room type. Build-only: in dev the playground plugin supplies the room config itself.
+    { ...rundotMultiplayerPlugin(), apply: 'build' },
   ],
   base: './',
   server: {

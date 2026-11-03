@@ -4,7 +4,14 @@
   "usesPreloader": false,
   "fullscreenEnabled": true,
   "maxDpr": 1.5,
-  "orientation": "both",
-  "keywords": null,
+  "orientation": "landscape",
+  "keywords": [
+    "racing",
+    "multiplayer",
+    "monster",
+    "halloween",
+    "monster-mash",
+    "city"
+  ],
   "kitId": null
 }

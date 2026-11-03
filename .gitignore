@@ -20,3 +20,8 @@ rundot/docs/
 .claude/launch.json
 .claude/settings.local.json
 **/settings.local.json
+
+# Map bake cache (raw OSM downloads, never shipped)
+bake/cache/
+bake/prof/
+docs/feature-tracker.md
